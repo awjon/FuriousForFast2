@@ -75,6 +75,15 @@ export class Car {
       isDrifting: false,
       driftDirection: 0,
       driftScore: 0,
+      // Context-sensitive Space key — a state machine, documented in full in
+      // physics/Physics.js's CarState block. driftKeyHeld is internal
+      // edge-detection bookkeeping only; nothing outside Physics.js reads it.
+      driftState: 'none',
+      driftLockDir: 0,
+      driftCharge: 0,
+      boostForce: 0,
+      boostTimer: 0,
+      driftKeyHeld: false,
       onRoad: true,
       nitrous: 0,
       nitrousActive: false,
@@ -228,6 +237,12 @@ export class Car {
     this.state.forwardForce = 0;
     this.state.lateralForce = 0;
     this.state.nitrousActive = false;
+    this.state.driftState = 'none';
+    this.state.driftLockDir = 0;
+    this.state.driftCharge = 0;
+    this.state.boostForce = 0;
+    this.state.boostTimer = 0;
+    this.state.driftKeyHeld = false;
 
     this.roadHint = { edgeId: road.edgeId, s: road.s };
 

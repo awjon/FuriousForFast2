@@ -18,13 +18,36 @@
  *   forwardSpeed    number          signed velocity along heading (m/s)
  *   lateralSpeed    number          signed velocity across heading (m/s)
  *   slipAngle       number          atan2(lateralSpeed, |forwardSpeed|), radians
- *   isDrifting      boolean         |slipAngle| > stats.driftThreshold
- *   driftDirection  -1 | 0 | 1
+ *   isDrifting      boolean         |slipAngle| > stats.driftThreshold — a purely
+ *                                   PHYSICAL reading of the tyres, independent of
+ *                                   driftState below (an e-brake can slide too).
+ *   driftDirection  -1 | 0 | 1      sign of slipAngle while isDrifting
  *   onRoad          boolean         from Track.sampleAt()
  *   nitrous         number          0..stats.nitrousCapacity
  *   nitrousActive   boolean
  *   grounded        boolean         false while airborne over a crest
  *   driftScore      number          accumulates |slipAngle|·speed·dt while drifting
+ *
+ *   ── The context-sensitive Space key (DRIFT in Config.js; CLAUDE.md §7.1
+ *   "The drift model") — a small state machine, not a flag. Entry conditions
+ *   are evaluated ONLY on the press edge; while Space is held the state does
+ *   not re-evaluate, or a drift would silently become an e-brake the instant
+ *   the player straightens the wheel mid-corner.
+ *   driftState      'none'|'drift'|'ebrake'|'burnout'|'boost'
+ *   driftLockDir    -1 | 0 | 1      steer sign at the moment a drift was
+ *                                   committed; fixed for the life of the
+ *                                   drift, only 'drift' sets it non-zero.
+ *   driftCharge     number          seconds of sustained slip ('drift', vs
+ *                                   DRIFT.chargeSlipAngle) or throttle
+ *                                   ('burnout', vs DRIFT.burnoutMaxCharge)
+ *                                   built up toward a release payout.
+ *   boostForce      number          newtons applied along `forward` while
+ *                                   driftState === 'boost' — a mini-turbo
+ *                                   tier payout or a burnout launch.
+ *   boostTimer      number          seconds left on the current boost.
+ *   driftKeyHeld    boolean         previous fixed step's controls.drift.
+ *                                   Internal edge-detection bookkeeping only
+ *                                   — never read outside this file.
  *
  * ── CarState, cosmetic and debug half ─────────────────────────────────────────
  * Written here because this is the only place with a real fixed dt to damp
@@ -52,7 +75,21 @@
  *    slipAngle = atan2(lateralSpeed, max(|forwardSpeed|, 0.5)). The 0.5 floor
  *    stops slipAngle exploding into noise at a standstill.
  *
- * 2. SURFACE. Ask Track.sampleAt(position, hint) for a REUSED scratch object:
+ * 2. DRIFT STATE MACHINE. Space is one context-sensitive key (DRIFT in
+ *    Config.js): on the press edge only, read speed and steer to choose
+ *    'drift' (moving + steering past DRIFT.steerToEngage — locks
+ *    driftLockDir to sign(steer)), 'burnout' (nearly stopped + throttle) or
+ *    'ebrake' (everything else). The state is held fixed until release —
+ *    never re-evaluated — so straightening the wheel mid-drift cannot flip
+ *    it. A charge meter accumulates while committed and actually sliding
+ *    ('drift' vs DRIFT.chargeSlipAngle) or spinning ('burnout'). Release
+ *    pays out: 'drift' → the highest DRIFT.tiers threshold reached becomes a
+ *    'boost' (mini-turbo); 'burnout' → 'boost' scaled by charge fraction
+ *    (launch); 'ebrake' → straight back to 'none'. 'boost' counts its own
+ *    timer down to 'none' every step it isn't otherwise interrupted by a
+ *    fresh press.
+ *
+ * 3. SURFACE. Ask Track.sampleAt(position, hint) for a REUSED scratch object:
  *    { road: {edgeId, s}, onRoad, surfaceY, distanceFromCentre, tangent,
  *    centre }. `road` is an opaque RoadPosition handle — copy its fields
  *    (edgeId, s) into the Car's own persistent `roadHint` object; never keep
@@ -61,23 +98,33 @@
  *    search a narrow window instead of the whole network. Off-road multiplies
  *    grip by stats.offroadGripMultiplier and drag by stats.offroadDragMultiplier.
  *
- * 3. LONGITUDINAL FORCE along `forward`:
+ * 4. LONGITUDINAL FORCE along `forward`:
  *      engine  = throttle · enginePower · powerCurve(forwardSpeed)
  *                where powerCurve = clamp(1 − forwardSpeed / topSpeed, 0, 1),
  *                so force tapers to zero at top speed — a soft limiter with no
  *                explicit speed clamp anywhere.
+ *                while driftState === 'burnout': engine ×= (1 −
+ *                DRIFT.burnoutHoldFactor), so the car keeps only a small
+ *                slice of its drive force and barely creeps. A fraction, not
+ *                a fixed hold force, so it behaves the same stock or maxed.
  *      boost   = nitrousActive ? stats.nitrousBoostForce : 0
+ *      turbo   = driftState === 'boost' ? boostForce : 0   // mini-turbo / launch
  *      brake   = −sign(forwardSpeed) · brake · brakeForce
  *      reverse = if throttle is 0, brake is held, and forwardSpeed < 0.5,
  *                apply −brake · enginePower · 0.4 instead of braking
+ *      ebrake  = driftState === 'ebrake' ? −sign(forwardSpeed) · DRIFT.ebrakeForce : 0
  *      drag    = −dragCoefficient · forwardSpeed · |forwardSpeed| · surfaceDrag
  *      roll    = −rollingResistance · forwardSpeed
  *
- * 4. LATERAL FORCE along `right`. This is where the drift lives:
+ * 5. LATERAL FORCE along `right`. This is where the drift lives:
  *      gripLimit = lateralGrip
  *                · (1 + speed · gripSpeedGain)     // fake downforce
  *                · surfaceGrip
- *                · (handbrake ? handbrakeGripMultiplier : 1)
+ *                · driftGripFactor
+ *      driftGripFactor =
+ *          driftState === 'drift'  ? DRIFT.gripMultiplier · (stats.handbrakeGripMultiplier / CAR_BASE.handbrakeGripMultiplier)
+ *        : driftState === 'ebrake' ? DRIFT.ebrakeGripMultiplier
+ *        : 1
  *      desired   = −lateralSpeed · mass / dt        // force that would kill all slide
  *      lateral   = clamp(desired, −gripLimit, +gripLimit)
  *    When |desired| > gripLimit the tyres are saturated: the car slides, and
@@ -88,7 +135,15 @@
  *    refill nitrous at NITROUS.driftRefillPerSecond. driftScore lives on
  *    car.state, NOT on Game.state: step() is never handed Game.state, and its
  *    signature is fixed. Game mirrors the player's value across each frame.
- * 5. YAW. Steering is kinematic, not torque-driven — far easier to tune:
+ *    This is unrelated to the mini-turbo charge meter — see stage 2 — which
+ *    is a separate reward on a separate timescale.
+ * 6. YAW. Steering is kinematic, not torque-driven — far easier to tune:
+ *      steerInput  = driftState !== 'drift' ? steer
+ *                  : driftLockDir · |steer| · (sign(steer) agrees with
+ *                    driftLockDir (or steer is 0) ? innerSteerFactor : outerSteerFactor)
+ *                    // sign is PINNED to driftLockDir — steering "against" the
+ *                    // lock only shrinks the magnitude, it can never cross
+ *                    // zero and flip the rotation or straighten the car.
  *      steerTarget = steerInput · maxSteerAngle / (1 + speed · steerSpeedFalloff)
  *      steer       = damp(steer, steerTarget, steerResponse, dt)
  *      yawTarget   = −(forwardSpeed / wheelbase) · tan(steer)      // bicycle model
@@ -101,13 +156,13 @@
  *    Reverse must steer the correct way: yawTarget already carries the sign of
  *    forwardSpeed, so do NOT take an absolute value there.
  *
- * 6. INTEGRATE (semi-implicit Euler — stable at 120 Hz, unlike explicit):
+ * 7. INTEGRATE (semi-implicit Euler — stable at 120 Hz, unlike explicit):
  *      acceleration = (forwardForce · forward + lateralForce · right) / mass
  *      velocity    += acceleration · dt
  *      position    += velocity · dt
  *    Then snap position.y to surfaceY (Phase 4 adds a spring for crests).
  *
- * 7. NITROUS bookkeeping: engage only if input is held AND
+ * 8. NITROUS bookkeeping: engage only if input is held AND
  *    nitrous >= NITROUS.minimumToEngage; drain while active; refill passively,
  *    plus an extra NITROUS.driftRefillPerSecond while isDrifting.
  *
@@ -115,12 +170,12 @@
  *   too sluggish        → enginePower, then topSpeed
  *   won't turn in       → maxSteerAngle, then steerSpeedFalloff
  *   spins on every turn → lateralGrip up, or driftYawAssist down
- *   drift won't hold    → handbrakeGripMultiplier down, driftYawAssist up
+ *   drift won't hold    → DRIFT.gripMultiplier down, driftYawAssist up
  *   drift won't recover → yawDamping up, and enable ACCESSIBILITY.driftAssist
  */
 
 import * as THREE from 'three';
-import { NITROUS, CAR_BODY } from '../Config.js';
+import { NITROUS, CAR_BODY, CAR_BASE, DRIFT } from '../Config.js';
 import { clamp, damp } from '../utils/MathUtils.js';
 
 export class Physics {
@@ -130,6 +185,22 @@ export class Physics {
     this._forward = new THREE.Vector3();
     this._right = new THREE.Vector3();
     this._acceleration = new THREE.Vector3();
+  }
+
+  /**
+   * The highest mini-turbo tier reached by a charge, or null if the charge
+   * never crossed even the first threshold. DRIFT.tiers is short and fixed,
+   * so a linear scan is fine — and it returns a reference into that frozen
+   * array, never allocating.
+   * @param {number} charge seconds accumulated
+   * @returns {{name: string, seconds: number, force: number, duration: number, color: number}|null}
+   */
+  _resolveDriftTier(charge) {
+    let reached = null;
+    for (const tier of DRIFT.tiers) {
+      if (charge >= tier.seconds) reached = tier;
+    }
+    return reached;
   }
 
   /**
@@ -162,7 +233,86 @@ export class Physics {
     state.lateralSpeed = lateralSpeed;
     state.slipAngle = slipAngle;
 
-    // ── 2. SURFACE ──────────────────────────────────────────────────────
+    // ── 2. DRIFT STATE MACHINE — the context-sensitive Space key ───────
+    // Entry conditions are evaluated ONLY on the press edge (computed from
+    // state.driftKeyHeld, never from controls.pressed — police controls have
+    // no `pressed` field, and this must work for any car). While Space stays
+    // down the state is left exactly as it was: re-checking every frame is
+    // the trap CLAUDE.md calls out — it would turn a drift into an e-brake
+    // the instant the player straightens the wheel mid-corner.
+    const driftKeyDown = Boolean(controls.drift);
+    const driftPressEdge = driftKeyDown && !state.driftKeyHeld;
+    const driftReleaseEdge = !driftKeyDown && state.driftKeyHeld;
+    state.driftKeyHeld = driftKeyDown;
+
+    if (driftPressEdge) {
+      // Read the RAW steer intent, not the ramped axis. The ramp needs ~60 ms
+      // to cross steerToEngage, so testing `controls.steer` here judges a
+      // player who pressed A and Space together as "not steering" and hands
+      // them an e-brake instead of the drift they asked for. Cars with no
+      // input layer (police, traffic) fall back to the smoothed axis.
+      const steerIntent = controls.steerRaw ?? controls.steer;
+      if (state.speed >= DRIFT.minSpeed && Math.abs(steerIntent) >= DRIFT.steerToEngage) {
+        state.driftState = 'drift';
+        state.driftLockDir = Math.sign(steerIntent);
+      } else if (state.speed < DRIFT.burnoutMaxSpeed && controls.throttle > 0) {
+        state.driftState = 'burnout';
+        state.driftLockDir = 0;
+      } else {
+        state.driftState = 'ebrake';
+        state.driftLockDir = 0;
+      }
+      // Deliberately NOT clearing boostTimer/boostForce: a boost already
+      // running keeps running when you commit to the next drift. Chaining
+      // corner to corner is the point of the mini-turbo ladder, and zeroing
+      // the boost here would punish exactly the play it should reward.
+      state.driftCharge = 0;
+    } else if (driftReleaseEdge) {
+      if (state.driftState === 'drift') {
+        const tier = this._resolveDriftTier(state.driftCharge);
+        if (tier) {
+          state.driftState = 'boost';
+          state.boostTimer = tier.duration;
+          state.boostForce = tier.force;
+        } else {
+          state.driftState = 'none';
+        }
+      } else if (state.driftState === 'burnout') {
+        const chargeFraction = clamp(state.driftCharge / DRIFT.burnoutMaxCharge, 0, 1);
+        state.driftState = 'boost';
+        state.boostTimer = DRIFT.burnoutLaunchDuration;
+        state.boostForce = DRIFT.burnoutLaunchForce * chargeFraction;
+      } else {
+        // 'ebrake' (or already 'none'/'boost') — no payout, just let go.
+        state.driftState = 'none';
+      }
+      state.driftCharge = 0;
+    }
+
+    // Boost runs on its own clock, independent of driftState, so it survives
+    // being re-pressed into a new drift (see above).
+    if (state.boostTimer > 0) {
+      state.boostTimer -= dt;
+      if (state.boostTimer <= 0) {
+        state.boostTimer = 0;
+        state.boostForce = 0;
+        if (state.driftState === 'boost') state.driftState = 'none';
+      }
+    }
+
+    // Charge only builds while committed AND actually sliding/spinning, so a
+    // lazy slide or a light throttle blip earns nothing (mirrors the mini-
+    // turbo ladder's design intent in Config.js).
+    if (state.driftState === 'drift') {
+      if (Math.abs(slipAngle) > DRIFT.chargeSlipAngle) state.driftCharge += dt;
+    } else if (state.driftState === 'burnout') {
+      state.driftCharge = Math.min(
+        DRIFT.burnoutMaxCharge,
+        state.driftCharge + DRIFT.burnoutChargePerSecond * dt
+      );
+    }
+
+    // ── 3. SURFACE ──────────────────────────────────────────────────────
     // sample is a REUSED scratch object — read fields now, never keep it.
     const sample = track.sampleAt(state.position, car.roadHint);
     state.onRoad = sample.onRoad;
@@ -181,12 +331,29 @@ export class Physics {
     const surfaceGrip = state.onRoad ? 1 : stats.offroadGripMultiplier;
     const surfaceDrag = state.onRoad ? 1 : stats.offroadDragMultiplier;
 
-    // ── 3. LONGITUDINAL FORCE along `forward` ──────────────────────────
+    // ── 4. LONGITUDINAL FORCE along `forward` ──────────────────────────
     const powerCurve = clamp(1 - forwardSpeed / stats.topSpeed, 0, 1);
-    let longitudinal = controls.throttle * stats.enginePower * powerCurve;
+    let engineForce = controls.throttle * stats.enginePower * powerCurve;
+
+    // BURNOUT: cancel most of the engine so the car barely creeps while the
+    // tyres spin. Scaling engine force by a FRACTION rather than subtracting a
+    // fixed hold force is what makes this work across the upgrade tree — a
+    // flat 16000 N left a stock car (11000 N) frozen at exactly zero while a
+    // fully upgraded one (20187 N) accelerated past burnoutMaxSpeed and simply
+    // drove off. A fraction always leaves the same small slice of creep, and
+    // can never go negative, so a burnout cannot roll the car backward.
+    if (state.driftState === 'burnout') {
+      engineForce *= 1 - DRIFT.burnoutHoldFactor;
+    }
+
+    let longitudinal = engineForce;
 
     state.nitrousActive = Boolean(controls.nitrous) && state.nitrous >= NITROUS.minimumToEngage;
     if (state.nitrousActive) longitudinal += stats.nitrousBoostForce;
+
+    // Mini-turbo payout or burnout launch: a forward push that decays over
+    // boostTimer. Independent of nitrous — both can be active at once.
+    if (state.driftState === 'boost') longitudinal += state.boostForce;
 
     const isReverseThrottle = controls.throttle <= 0 && controls.brake > 0 && forwardSpeed < 0.5;
     if (isReverseThrottle) {
@@ -195,15 +362,30 @@ export class Physics {
       longitudinal += -Math.sign(forwardSpeed) * controls.brake * stats.brakeForce;
     }
 
+    // E-BRAKE: a genuine stop, independent of the `brake` control — this is
+    // what the old grip-only handbrake never did.
+    if (state.driftState === 'ebrake') {
+      longitudinal += -Math.sign(forwardSpeed) * DRIFT.ebrakeForce;
+    }
+
     longitudinal += -stats.dragCoefficient * forwardSpeed * Math.abs(forwardSpeed) * surfaceDrag;
     longitudinal += -stats.rollingResistance * forwardSpeed;
 
-    // ── 4. LATERAL FORCE along `right` — this is where the drift lives ─
+    // ── 5. LATERAL FORCE along `right` — this is where the drift lives ─
+    // DRIFT.gripMultiplier is the base; the brakes upgrade's
+    // stats.handbrakeGripMultiplier still modulates it by the same ratio it
+    // would have applied to the old handbrake, so that upgrade keeps doing
+    // something (see the Phase 1b report for why a ratio, not a product).
+    let driftGripFactor = 1;
+    if (state.driftState === 'drift') {
+      driftGripFactor =
+        DRIFT.gripMultiplier * (stats.handbrakeGripMultiplier / CAR_BASE.handbrakeGripMultiplier);
+    } else if (state.driftState === 'ebrake') {
+      driftGripFactor = DRIFT.ebrakeGripMultiplier;
+    }
+
     const gripLimit =
-      stats.lateralGrip *
-      (1 + state.speed * stats.gripSpeedGain) *
-      surfaceGrip *
-      (controls.drift ? stats.handbrakeGripMultiplier : 1);
+      stats.lateralGrip * (1 + state.speed * stats.gripSpeedGain) * surfaceGrip * driftGripFactor;
 
     const desiredLateral = (-lateralSpeed * stats.mass) / dt;
     const lateral = clamp(desiredLateral, -gripLimit, gripLimit);
@@ -219,9 +401,23 @@ export class Physics {
       state.driftScore += Math.abs(slipAngle) * state.speed * dt;
     }
 
-    // ── 5. YAW — kinematic bicycle model ───────────────────────────────
+    // ── 6. YAW — kinematic bicycle model ───────────────────────────────
+    // Inside a locked drift, steering only modulates the arc: into the turn
+    // tightens it (innerSteerFactor), away widens it (outerSteerFactor), but
+    // the sign fed to the bicycle model below is pinned to driftLockDir — it
+    // can shrink toward zero but never cross it, so opposing the lock cannot
+    // straighten the car or flip which way it is rotating.
+    let steerInput = controls.steer;
+    if (state.driftState === 'drift') {
+      const lockDir = state.driftLockDir;
+      const rawSign = Math.sign(controls.steer);
+      const intoTurn = rawSign === 0 || rawSign === lockDir;
+      const factor = intoTurn ? DRIFT.innerSteerFactor : DRIFT.outerSteerFactor;
+      steerInput = lockDir * Math.abs(controls.steer) * factor;
+    }
+
     const steerTarget =
-      (controls.steer * stats.maxSteerAngle) / (1 + state.speed * stats.steerSpeedFalloff);
+      (steerInput * stats.maxSteerAngle) / (1 + state.speed * stats.steerSpeedFalloff);
     state.steer = damp(state.steer, steerTarget, stats.steerResponse, dt);
 
     // NEGATED on purpose. The textbook bicycle model is written in the SAE
@@ -234,7 +430,7 @@ export class Physics {
     state.yawRate = damp(state.yawRate, yawTarget, stats.yawDamping, dt);
     state.heading += state.yawRate * dt;
 
-    // ── 6. INTEGRATE — semi-implicit Euler ─────────────────────────────
+    // ── 7. INTEGRATE — semi-implicit Euler ─────────────────────────────
     this._acceleration
       .copy(forward)
       .multiplyScalar(longitudinal)
@@ -245,7 +441,7 @@ export class Physics {
     state.position.addScaledVector(state.velocity, dt);
     state.position.y = surfaceY;
 
-    // ── 7. NITROUS BOOKKEEPING ─────────────────────────────────────────
+    // ── 8. NITROUS BOOKKEEPING ─────────────────────────────────────────
     if (state.nitrousActive) {
       state.nitrous = Math.max(0, state.nitrous - stats.nitrousDrainPerSecond * dt);
     } else {
@@ -267,7 +463,14 @@ export class Physics {
     state.roll = damp(state.roll, rollTarget, CAR_BODY.tiltResponse, dt);
     state.pitch = damp(state.pitch, pitchTarget, CAR_BODY.tiltResponse, dt);
 
-    state.wheelSpin += (forwardSpeed / CAR_BODY.wheelRadius) * dt;
+    // BURNOUT overrides the visual spin rate: the wheels are slipping on the
+    // spot, not rolling with forwardSpeed, so the usual formula would barely
+    // move them.
+    if (state.driftState === 'burnout') {
+      state.wheelSpin += DRIFT.burnoutWheelSpinRate * dt;
+    } else {
+      state.wheelSpin += (forwardSpeed / CAR_BODY.wheelRadius) * dt;
+    }
   }
 
   /**

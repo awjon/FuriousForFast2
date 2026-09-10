@@ -57,6 +57,14 @@ export class Input {
      */
     this.snapshot = {
       steer: 0,
+      /**
+       * Instantaneous steering INTENT, before the ramp above smooths it.
+       * The ramped `steer` axis takes ~60 ms to cross a threshold, so a player
+       * who presses A and Space together — the natural way to start a drift —
+       * would be judged "not steering" and get an e-brake. Anything reacting
+       * to a key press EDGE must read this, not `steer`.
+       */
+      steerRaw: 0,
       throttle: 0,
       brake: 0,
       /** Context-sensitive: drift / e-brake / burnout. Physics decides which. */
@@ -112,6 +120,7 @@ export class Input {
     const steerRate = Math.abs(steerTarget) > Math.abs(this.snapshot.steer)
       ? INPUT.steerAttack
       : INPUT.steerRelease;
+    this.snapshot.steerRaw = steerTarget;
     this.snapshot.steer = approach(this.snapshot.steer, steerTarget, steerRate * dt);
     this.snapshot.throttle = approach(
       this.snapshot.throttle,

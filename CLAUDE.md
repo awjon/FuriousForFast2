@@ -235,6 +235,14 @@ to `sampleAt`/`getPose`/`route`, store it as a car's `roadHint`, but never
 compare or subtract two of them. Distances and gaps come from `RoadNetwork`
 queries. There is no global lap parameter; see §7.2.
 
+**Raw versus ramped steer.** `Input` publishes two steering values.
+`controls.steer` is the smoothed axis that drives the car; `controls.steerRaw`
+is the instantaneous intent. **Anything reacting to a key press EDGE must read
+`steerRaw`.** The ramp takes ~60 ms to cross a threshold, so testing the
+smoothed axis on a press judges a player who hit A and Space together — the
+natural way to start a drift — as "not steering", and hands them an e-brake.
+Cars with no input layer (police, traffic) simply omit `steerRaw`.
+
 **Reused return objects.** `Track.sampleAt()` and `Track.getPose()` return a
 single scratch object that is overwritten on the next call, because they run
 once per car per fixed step. **Copy any field you need to keep.** Holding the
@@ -374,9 +382,28 @@ pillar 1 makes nitrous-from-drifting load-bearing.
 
 **A state machine, not a flag.** Physics owns `state.driftState`
 (`none` | `drift` | `ebrake` | `burnout` | `boost`). Entry conditions are
-evaluated only on the press edge; while held, the state does not re-evaluate.
-That is what stops a drift silently becoming an e-brake mid-corner when you
-happen to straighten the wheel.
+evaluated only on the press edge, from `controls.steerRaw`; while held, the
+state does not re-evaluate. That is what stops a drift silently becoming an
+e-brake mid-corner when you happen to straighten the wheel.
+
+**A boost runs on its own clock**, independent of `driftState`, so committing to
+the next drift does not cancel the one you just earned. Chaining corner to
+corner is the point of the ladder, and clearing the boost on re-press would
+punish exactly the play it should reward.
+
+**Burnout cancels a FRACTION of engine force** (`DRIFT.burnoutHoldFactor`), not
+a fixed number of newtons. Engine power spans 11000 N stock to over 20000 N
+fully upgraded, and no absolute hold force works across that range — the
+original flat 16000 N left a stock car frozen at exactly zero while a maxed one
+accelerated past `burnoutMaxSpeed` and drove away. A fraction leaves the same
+slice of creep at both ends and can never go negative.
+
+**The brakes upgrade still reaches the drift.** `DRIFT.gripMultiplier` is the
+authored base; the owned brakes tier is applied as a ratio against
+`CAR_BASE.handbrakeGripMultiplier` so a purchased upgrade keeps visibly
+deepening the slide. Substituting `stats.handbrakeGripMultiplier` wholesale
+would look identical today only because the two Config bases happen to match,
+and would silently stop working the moment they diverge.
 
 ### 7.2 `world/Track.js` + `world/RoadNetwork.js` — the open-world city
 
@@ -663,18 +690,25 @@ hands on the keyboard yet, and headless assertions cannot: **§7.1's tuning tabl
 is the tool for this, and `driftYawAssist` ↓ / `lateralGrip` ↑ is the first
 thing to try.**
 
-### Phase 1b — Drift feel and two-player input
+### Phase 1b — Drift feel and two-player input ✅ DONE
 
-The drift model above, replacing the grip-only handbrake. Config (`DRIFT`,
-`INPUT.players`) and the `Input` per-player migration are done; the physics
-state machine is not.
+The context-sensitive drift replacing the grip-only handbrake, plus per-player
+input.
 
-*Acceptance:* Entering a drift feels like a commitment you steer through, not a
-slider you hold. The charge meter reaches all three tiers and each pays out a
-visibly bigger boost. Space with no steering brings the car to a genuine stop.
-Space stopped with throttle spins the wheels and launches on release. Two
-`Input` instances can be constructed and driven independently without either
-player's keys touching the other's car.
+*Verified* across three independent suites, all green: the drift lock holds
+when you steer against it (yaw stayed +1.27 rad/s while opposing); holding
+through a straightened wheel never flips to e-brake; the tier ladder resolves
+blue/orange/purple at 0.61/1.51/2.61 s of charge and each pays measurably more
+speed (5.18 / 10.21 / 18.33 m/s gained, against 3.27 on throttle alone);
+e-brake stops from 16.2 m/s in 1.02 s over 8.1 m; burnout holds under 3 m/s
+while `wheelSpin` climbs 36 rad, and releasing launches to 9.3 m/s; a boost
+survives being chained into the opposite drift.
+
+**Still open — feel, not correctness.** The same broadside drift noted in
+Phase 1 is still there, and `DRIFT.outerSteerFactor` (how much steering away
+widens the arc) is a pure judgement call nobody has driven yet. The steer
+modulation pins the sign and only scales magnitude; an alternative reading
+would have opposing input actively unwind the yaw. Drive it before retuning.
 
 *Not in scope here:* split-screen rendering — two viewports, two cameras, a
 split render target. This phase only makes the input layer ready for it.
@@ -940,3 +974,15 @@ load-bearing.
 cannot be blocked in Chrome outside fullscreen, and player 1 holds `W`. Player
 2's extra actions are on the numpad. Superseded the original proposal of
 `LCtrl`/`LAlt` and `RCtrl`/`RAlt`.
+
+**2026-09-10 — Drift entry reads `steerRaw`, not the ramped axis.** Pressing A
+and Space together produced an e-brake, because the smoothed steer axis was
+still at 0.07 when the press edge fired. Input now publishes instantaneous
+intent alongside the smoothed value, and anything edge-triggered reads it.
+
+**2026-09-10 — Burnout hold is a fraction of engine force, not a fixed
+newton figure.** No absolute value works across an 11000–20200 N engine range.
+
+**2026-09-10 — A mini-turbo survives chaining into the next drift.** The boost
+timer runs independently of `driftState`, so an S-bend rewards rather than
+punishes committing early.

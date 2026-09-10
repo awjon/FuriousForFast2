@@ -203,7 +203,14 @@ export const DRIFT = Object.freeze({
 
   /** BURNOUT — stopped, throttle pinned, Space held. */
   burnoutMaxSpeed: 3, // m/s; above this Space e-brakes instead
-  burnoutHoldForce: 16000, // opposes the engine so the car barely creeps
+  /**
+   * Fraction of engine force cancelled while roasting the tyres. A FRACTION,
+   * not an absolute newton figure: engine power ranges from 11000 N stock to
+   * over 20000 N fully upgraded, and no fixed hold force works across that.
+   * 16000 N flat left a stock car frozen at exactly 0 m/s while a maxed one
+   * accelerated past burnoutMaxSpeed and simply drove away.
+   */
+  burnoutHoldFactor: 0.92,
   burnoutWheelSpinRate: 45, // rad/s of visual wheel spin while roasting them
   burnoutChargePerSecond: 1.0,
   burnoutMaxCharge: 1.6, // seconds of charge worth banking
