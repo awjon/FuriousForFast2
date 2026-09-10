@@ -1,15 +1,20 @@
 /**
- * Track.js — the drivable city. STUB: see TODO(phase-2).
+ * Track.js — the drivable city. IMPLEMENTED phase-2a (crude geometry; Phase 2b
+ * replaces the road mesh with lane markings, intersection polygons, kerb neon,
+ * guardrails and buildings).
  *
- * ⚠ ARCHITECTURE CHANGE (decided after Phase 0; see CLAUDE.md §7.2)
- * This is NO LONGER a single closed circuit. The game is an OPEN WORLD: one
- * road NETWORK — a graph of intersections joined by spline segments —
- * generated once from a FIXED seed so the city is identical in every session
- * and players learn it by heart. Races are seeded CHECKPOINT SEQUENCES laid
- * on top of that fixed city; the seed varies the route, never the map.
+ * ⚠ ARCHITECTURE (decided after Phase 0; see CLAUDE.md §7.2)
+ * This is NOT a single closed circuit. The game is an OPEN WORLD: one road
+ * NETWORK — a graph of intersections joined by spline segments — generated
+ * once from a FIXED seed so the city is identical in every session and
+ * players learn it by heart. Races are seeded CHECKPOINT SEQUENCES laid on
+ * top of that fixed city; the seed varies the route, never the map.
  *
- * The graph, its spatial index and its routing live in world/RoadNetwork.js.
- * This file owns generation and geometry, and exposes the query API below.
+ * **`RoadNetwork.js` owns the graph and every query over it** (generation,
+ * `sampleAt`, `getPose`, `getSpawn`, routing) — this file only holds it as
+ * `this.network` and delegates those calls straight through. This file's own
+ * job is geometry and the scene graph: turning the network's edges into
+ * chunked road meshes.
  *
  * Consequences to respect:
  *  - There is no global lap parameter `t`. A position on the road is an opaque
@@ -20,51 +25,34 @@
  *  - Cops need real route-finding across the graph, not a lookahead along one
  *    curve. See CLAUDE.md §7.4.
  *
- * ── GENERATION (deterministic, driven by utils/Random.js) ─────────────────────
- * 1. Walk `TRACK.controlPointCount` angles evenly around a circle of
- *    TRACK.loopRadius. Perturb each point radially by ±TRACK.radialJitter and
- *    vertically within TRACK.elevationRange. Reject a candidate whose turn
- *    angle against its neighbours exceeds ~70° — that is what produces
- *    drivable sweepers instead of hairpin spaghetti.
- * 2. new THREE.CatmullRomCurve3(points, true, 'catmullrom', 0.5)
- * 3. curve.getSpacedPoints(TRACK.splineSamples) for ARC-LENGTH-EVEN samples.
- *    Use getSpacedPoints, not getPoints: even spacing is what keeps the road
- *    mesh from bunching in corners and makes `t` usable as a race position.
+ * ── ROAD MESH (phase-2a: crude, untextured ribbons — Phase 2b's job to dress) ─
+ * Per edge, for each of its (already arc-length-even) samples i: point Pᵢ,
+ * tangent Tᵢ (already computed by RoadNetwork), and side vector
+ * Sᵢ = normalize(cross(Tᵢ, UP)). Emit two vertices at Pᵢ ± Sᵢ · (edge.width/2)
+ * and index consecutive sample pairs into two triangles each, wound so the
+ * face normal points +Y (verified against `computeVertexNormals()`, not
+ * assumed — see the derivation in `_buildRoadMeshes()`).
  *
- * ── ROAD MESH ─────────────────────────────────────────────────────────────────
- * For each sample i: point Pᵢ, tangent Tᵢ = curve.getTangentAt(i/N), and a
- * side vector Sᵢ = normalize(cross(Tᵢ, UP)). Emit two vertices at
- * Pᵢ ± Sᵢ · (roadWidth / 2). Index consecutive pairs into quads. UVs: u across
- * the road (0..1), v along it in metres / 8 so the dashed-line texture tiles at
- * a fixed real-world scale regardless of segment length.
+ * No lane-marking UVs, no intersection fill polygons, no kerbs/rails/
+ * buildings/streetlights yet — all explicitly Phase 2b. Ribbons from
+ * different edges simply overlap at junctions for now; CLAUDE.md §7.2 already
+ * flags the z-fighting this will cause as a Phase 2b concern, not a phase-2a
+ * one ("geometry can stay crude — untextured ribbons are fine").
  *
- * Build the road as TRACK.chunkCount separate meshes rather than one giant
- * BufferGeometry — a single mesh can never be frustum-culled, so the GPU
- * transforms the whole city every frame.
- *
- * ── STYLING (the NFSU2 look) ──────────────────────────────────────────────────
- *  road      MeshStandardMaterial, near-black (PALETTE.asphalt), roughness 0.35,
- *            metalness 0.55 — the low roughness is the "wet street" read, and it
- *            is what makes the neon emitters smear along the tarmac.
- *  kerbs     thin extruded strips, MeshBasicMaterial in cyan/magenta, alternating
- *            per chunk. Basic (not Standard) so bloom picks them up at full
- *            intensity without needing a light.
- *  rails     boxes at ±(roadWidth/2 + shoulderWidth), emissive edge trim.
- *  buildings InstancedMesh of boxes, one instance per streetlight slot that
- *            passes TRACK.buildingDensity. Vary height 8–70 m. Windows come from
- *            an emissive grid texture, NOT from geometry.
- *  lights    Do NOT add a PointLight per streetlight — 400 lights will not run.
- *            Use emissive quads for the glow and 3–4 moving lights total.
- *
- * ── QUERY API ─────────────────────────────────────────────────────────────────
- * sampleAt() is called for every car every fixed step, so it must be O(1).
- * Precompute a uniform spatial grid (cell ≈ 40 m) mapping cell → candidate
- * sample indices at build time, then test only those candidates.
+ * Chunking: edges are grouped into `WORLD.chunkSize`-metre chunks by their
+ * midpoint and built into one BufferGeometry per chunk (not one mesh for the
+ * whole city), so the road can be frustum-culled. An edge that happens to
+ * straddle a chunk boundary is not split — its whole ribbon goes to the chunk
+ * containing its midpoint. That is an acceptable phase-2a simplification: it
+ * only affects culling precision at the edges of very long arterials, never
+ * correctness, and Phase 2b's real geometry pass is the natural place to
+ * split spans across chunk boundaries properly.
  */
 
 import * as THREE from 'three';
 import { WORLD, PALETTE } from '../Config.js';
 import { Random } from '../utils/Random.js';
+import { RoadNetwork } from './RoadNetwork.js';
 
 /**
  * An opaque handle to a location on the road network. Do not do arithmetic on
@@ -91,99 +79,132 @@ export class Track {
     this.random = new Random(seed);
     this.seed = seed;
 
-    /** @type {THREE.CatmullRomCurve3 | null} */
-    this.curve = null;
-    /** @type {THREE.Vector3[]} arc-length-even samples along the loop */
-    this.samples = [];
-    /** @type {import('./RoadNetwork.js').RoadNetwork | null} built in Phase 2 */
-    this.network = null;
+    /** @type {RoadNetwork} the graph and every query over it — see RoadNetwork.js */
+    this.network = new RoadNetwork({ seed });
+
     /** @type {THREE.Group} everything this track added to the scene */
     this.group = new THREE.Group();
     this.group.name = 'track';
-    /**
-     * Scratch objects returned by sampleAt() and getPose(). Reused every call —
-     * these two run once per car per fixed step, and allocating there produces
-     * hundreds of garbage objects a second.
-     */
-    this._scratchSample = {
-      road: { edgeId: 0, s: 0 },
-      distanceFromCentre: 0,
-      onRoad: true,
-      surfaceY: 0,
-      tangent: new THREE.Vector3(0, 0, -1),
-      centre: new THREE.Vector3(),
-    };
-    this._scratchPose = { position: new THREE.Vector3(), heading: 0 };
+
+    /** @type {THREE.Material|null} shared by every road chunk mesh */
+    this._roadMaterial = null;
   }
 
   /**
-   * Generate the spline and all geometry, and add it to the scene.
+   * Generate the network and its geometry, and add it to the scene.
    * Async so Phase 5 can await texture loads without changing the call site.
    * @param {THREE.Scene} scene
    */
   async build(scene) {
-    // TODO(phase-2): generate spline, road mesh, kerbs, rails, buildings.
+    this.network.generate();
+    this._buildRoadMeshes();
     scene.add(this.group);
-    void PALETTE;
+  }
+
+  /**
+   * Crude chunked road ribbons — see the file header for the exact geometry
+   * and the deliberate phase-2a simplifications (no lane markings, no
+   * intersection fill, edges not split across chunk boundaries).
+   */
+  _buildRoadMeshes() {
+    this._roadMaterial = new THREE.MeshStandardMaterial({
+      color: PALETTE.asphalt,
+      roughness: 0.35,
+      metalness: 0.55,
+    });
+
+    const chunkSize = WORLD.chunkSize;
+    /** @type {Map<string, {positions: number[], indices: number[]}>} */
+    const chunks = new Map();
+
+    for (const edge of this.network.edges) {
+      const samples = edge.samples;
+      const tangents = edge.tangents;
+      const halfWidth = edge.width / 2;
+
+      const mid = samples[Math.floor(samples.length / 2)];
+      const chunkKey = `${Math.floor(mid.x / chunkSize)}_${Math.floor(mid.z / chunkSize)}`;
+      let chunk = chunks.get(chunkKey);
+      if (!chunk) {
+        chunk = { positions: [], indices: [] };
+        chunks.set(chunkKey, chunk);
+      }
+
+      const baseIndex = chunk.positions.length / 3;
+      for (let i = 0; i < samples.length; i++) {
+        const p = samples[i];
+        const t = tangents[i];
+        // side = normalize(cross(tangent, UP)); cross(T, (0,1,0)) = (-T.z, 0, T.x).
+        const sideX = -t.z;
+        const sideZ = t.x;
+        const sideLen = Math.hypot(sideX, sideZ) || 1;
+        const sx = (sideX / sideLen) * halfWidth;
+        const sz = (sideZ / sideLen) * halfWidth;
+        // Left vertex first, then right — a0/a1 below assumes this order.
+        chunk.positions.push(p.x - sx, p.y, p.z - sz, p.x + sx, p.y, p.z + sz);
+      }
+
+      // Winding: (a0, a1, b0) then (a1, b1, b0) — derived by hand for a
+      // tangent of (0,0,-1) (side = +X, so a0=left=-X, a1=right=+X, and the
+      // next sample is further -Z): cross(a1-a0, b0-a0) = (0, +2·halfWidth·Δz
+      // sign works out to +Y) confirms this winding faces up, not down.
+      for (let i = 0; i < samples.length - 1; i++) {
+        const a0 = baseIndex + i * 2;
+        const a1 = a0 + 1;
+        const b0 = a0 + 2;
+        const b1 = a0 + 3;
+        chunk.indices.push(a0, a1, b0, a1, b1, b0);
+      }
+    }
+
+    for (const [key, chunk] of chunks) {
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.Float32BufferAttribute(chunk.positions, 3));
+      geometry.setIndex(chunk.indices);
+      geometry.computeVertexNormals();
+      const mesh = new THREE.Mesh(geometry, this._roadMaterial);
+      mesh.name = `road-chunk-${key}`;
+      this.group.add(mesh);
+    }
   }
 
   /**
    * Nearest-point query against the road network. Called for every car every
-   * fixed step, so it MUST be O(1) and allocation-free: mutate and return
-   * `this._scratchSample` rather than building a new object.
-   *
-   * PHASE 1 BEHAVIOUR: reports flat ground at y = 0 and `onRoad: true`
-   * everywhere, so Physics can be built and tuned before the city exists.
-   * Callers must not depend on that — read the fields, never assume the values.
+   * fixed step, so it MUST be O(1) and allocation-free. Delegates straight to
+   * RoadNetwork, which owns the graph, the spatial index and the scratch
+   * object actually being returned — see RoadNetwork.sampleAt().
    *
    * @param {THREE.Vector3} position
-   * @param {RoadPosition} [hint] this car's road position last step. Lets the
-   *   Phase 2 implementation search a couple of adjacent edges instead of the
-   *   whole spatial index. Safe to pass null on the first call.
+   * @param {RoadPosition} [hint] this car's road position last step. Safe to
+   *   pass null on the first call.
    * @returns {TrackSample} a REUSED object — copy any field you need to keep
    */
   sampleAt(position, hint) {
-    // TODO(phase-2): spatial-index lookup, then nearest point on candidate edges.
-    void position;
-    const sample = this._scratchSample;
-    sample.road.edgeId = hint?.edgeId ?? 0;
-    sample.road.s = hint?.s ?? 0;
-    sample.distanceFromCentre = 0;
-    sample.onRoad = true;
-    sample.surfaceY = 0;
-    sample.tangent.set(0, 0, -1);
-    sample.centre.set(position.x, 0, position.z);
-    return sample;
+    return this.network.sampleAt(position, hint);
   }
 
   /**
    * Position and orientation at a road position. Used to place the player at
-   * the start, respawn after a bust, and spawn cops and roadblocks.
-   *
-   * PHASE 1 BEHAVIOUR: returns the origin facing −Z regardless of input.
+   * the start, respawn after a bust, and spawn cops and roadblocks. Delegates
+   * to RoadNetwork.getPose() — see RoadNetwork.js.
    *
    * @param {RoadPosition} road
    * @param {number} [lateralOffset] metres right of centre
    * @returns {{ position: THREE.Vector3, heading: number }} a REUSED object
    */
   getPose(road, lateralOffset = 0) {
-    // TODO(phase-2)
-    void road;
-    void lateralOffset;
-    this._scratchPose.position.set(0, 0, 0);
-    this._scratchPose.heading = 0;
-    return this._scratchPose;
+    return this.network.getPose(road, lateralOffset);
   }
 
   /**
    * The player's default start position — a fixed, hand-picked spot in the
    * city, not a random one, because it doubles as the respawn point and as the
-   * place screenshots and lap times are anchored to.
+   * place screenshots and lap times are anchored to. Delegates to
+   * RoadNetwork.getSpawn().
    * @returns {RoadPosition}
    */
   getSpawn() {
-    // TODO(phase-2)
-    return { edgeId: 0, s: 0 };
+    return this.network.getSpawn();
   }
 
   dispose() {

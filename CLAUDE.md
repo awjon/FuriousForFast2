@@ -199,7 +199,7 @@ the signatures without updating this file.**
 | `utils/Random.js` | IMPLEMENTED |
 | `physics/Physics.js` | IMPLEMENTED |
 | `entities/Car.js` | IMPLEMENTED (mesh + state); `applyVisuals` phase 3 |
-| `world/Track.js` | STUB — phase 2; contract reworked for the open world |
+| `world/Track.js` | IMPLEMENTED (crude ribbons); dressing in phase 2b |
 | `world/Environment.js` | PARTIAL — placeholder lights, phase 2 |
 | `render/CameraRig.js` | PARTIAL — minimal follow in phase 1, completed phase 3 |
 | `render/PostFX.js` | STUB — phase 3 (falls through to plain render) |
@@ -207,7 +207,7 @@ the signatures without updating this file.**
 | `ui/Garage.js` | STUB — phase 3 |
 | `entities/Police.js` | STUB — phase 4 |
 | `systems/HeatSystem.js` | STUB — phase 4 |
-| `world/RoadNetwork.js` | STUB — phase 2a; contract documented, Node-safe |
+| `world/RoadNetwork.js` | IMPLEMENTED — graph, index, routing; Node-safe |
 | `systems/RaceSystem.js` | NOT YET WRITTEN — phase 3b |
 | `entities/Traffic.js` | NOT YET WRITTEN — phase 5 |
 
@@ -725,18 +725,27 @@ would have opposing input actively unwind the yaw. Drive it before retuning.
 *Not in scope here:* split-screen rendering — two viewports, two cameras, a
 split render target. This phase only makes the input layer ready for it.
 
-### Phase 2a — The road network
+### Phase 2a — The road network ✅ DONE
 
-`RoadNetwork.js` from scratch: graph generation, edge splines, the spatial
-index, `sampleAt`, `getPose`, and routing. Geometry can stay crude — untextured
-ribbons are fine. This phase is about the data structure being right.
+`RoadNetwork.js`: graph generation, the spatial index, `sampleAt`, `getPose`,
+routing, and the `?network` overlay. `Track.js` builds crude chunked ribbons
+from it and delegates the queries through.
 
-*Acceptance:* You can drive anywhere on a connected network of streets and
-`sampleAt()` always reports the correct edge, including through intersections
-and after a respawn. `?network` overlays the graph. `sampleAt()` is O(1) —
-**profile it with 30 cars before moving on**, because traffic will put it there.
-`route()` returns a sane path between any two road positions, and rejects
-nothing that is actually reachable.
+*Verified* by an independent Node validator (21/21) plus three browser suites
+(19/19, 17/17, 4/4). **225 nodes, 417 edges, 65 km of road, generated in 56 ms.**
+Same seed byte-identical across separate instances; a different seed differs.
+Fully connected — 225/225 reachable. `sampleAt()` **3.19 µs/call, 26× faster
+than a naive all-edges scan**, ~1.1% of the fixed-step budget with 30 cars, and
+allocation-free. 300/300 random routes succeed and every one is a genuinely
+connected chain. Round-trips `getPose`→`sampleAt` to within 0.00 m.
+
+**Known simplifications, all Phase 2b's to revisit:**
+- Every edge is a straight two-point curve, so streets kink at junctions rather
+  than blending through them. Explicitly allowed by "geometry can stay crude".
+- An edge straddling a chunk boundary is not split; its whole ribbon goes to
+  the chunk containing its midpoint. Affects culling precision on long
+  arterials, never correctness.
+- The road is unlit black ribbon — the five-light rig and materials are 2b.
 
 ### Phase 2b — The city looks like a city
 
@@ -1005,3 +1014,29 @@ so growing it costs boot time as well as memorability.
 It is constructible under Node with no WebGL context, so graph generation,
 connectivity and routing can be unit-tested in milliseconds instead of through
 a browser. `Track.js` owns all geometry.
+
+**2026-09-10 — `route()` resolves direction ambiguity by trying all four
+endpoint pairs.** A `RoadPosition` names a place, not a direction of travel, so
+"route from this edge" does not say which of its two nodes to leave by. `route()`
+tries both endpoints of the from-edge against both of the to-edge, weights each
+by real partial-edge distance, and keeps the cheapest — with an A* node-pair
+cache underneath so the four searches are not four times the cost. **Phase 4
+should check this is what the pursuit AI wants**: a cop that should never
+U-turn may need a direction-aware variant rather than the cheapest path.
+
+**2026-09-10 — `sampleAt()` never trusts its hint blindly.** The first
+implementation accepted the hinted edge whenever it was within a block, without
+checking what was actually near the queried position — which passes every
+ordinary test and then puts a respawned or teleported car on the wrong street.
+It now always also tests the 3×3 spatial cells around the true position. Cost
+rose from 0.6 µs to 3.2 µs per call, still 26× faster than a naive scan, and
+worth every nanosecond: a wrong edge silently corrupts routing, rubber-banding
+and race progress downstream.
+
+**2026-09-10 — Position after N seconds is not a valid proxy for turn
+direction.** The Phase 1 suite asserted steering by x-displacement after three
+seconds at full lock. Once real roads existed the car could rotate past 180°,
+flipping the sign of its net displacement and making correct steering look
+inverted. The check now measures heading change over 0.5 s, taking the shortest
+signed path so the ±π seam cannot corrupt it. The related flat-earth assertion
+(`y ≈ 0`) became "sits on the road surface", since the city now has elevation.

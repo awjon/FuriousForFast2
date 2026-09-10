@@ -96,6 +96,14 @@ export class Game {
     this.track = new Track({ seed: WORLD.seed });
     await this.track.build(this.scene);
 
+    // `?network` — overlay the road graph: edge centrelines, intersection
+    // markers, the spawn point. Debug-only; RoadNetwork.buildDebugOverlay()
+    // is the one place that file is allowed to touch Three.js scene objects.
+    if (DEBUG.showNetwork) {
+      this._networkOverlay = this.track.network.buildDebugOverlay();
+      this.scene.add(this._networkOverlay);
+    }
+
     this.player = new Car({ stats: this.state.stats, isPlayer: true });
     await this.player.build(this.scene);
     this.player.placeOnTrack(this.track, this.track.getSpawn());
@@ -190,6 +198,13 @@ export class Game {
     this.track?.dispose();
     this.environment?.dispose();
     this.player?.dispose();
+    if (this._networkOverlay) {
+      this._networkOverlay.traverse((object) => {
+        object.geometry?.dispose();
+        object.material?.dispose();
+      });
+      this._networkOverlay.removeFromParent();
+    }
     this.renderer.dispose();
     this.scene.clear();
   }
