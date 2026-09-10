@@ -1,0 +1,27 @@
+{
+  "name": "furious-for-fast-2",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Minimalist Three.js arcade racer: NFS Underground 2 street styling meets Hot Pursuit police chases.",
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "lint": "eslint .",
+    "format": "prettier --write \"**/*.{js,html,css,json,md}\""
+  },
+  "dependencies": {
+    "three": "^0.186.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.10.0",
+    "globals": "^17.12.0",
+    "prettier": "^3.6.2",
+    "vite": "^8.2.2"
+  }
+}

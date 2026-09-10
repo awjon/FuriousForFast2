@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <title>Furious For Fast 2</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🏎️</text></svg>" />
+    <link rel="stylesheet" href="./src/ui/styles.css" />
+  </head>
+  <body>
+    <!-- Three.js renders here. Sized by Renderer.js, never by CSS width/height. -->
+    <canvas id="game-canvas"></canvas>
+
+    <!-- All 2D UI is plain DOM layered over the canvas. No CSS3DRenderer, no sprite text. -->
+    <div id="ui-root" aria-live="polite">
+      <div id="loading-screen" class="overlay">
+        <h1 class="logo">FURIOUS<span>FOR</span>FAST<em>2</em></h1>
+        <p class="hint">loading…</p>
+      </div>
+
+      <!-- Populated by src/ui/HUD.js -->
+      <div id="hud" hidden></div>
+
+      <!-- Populated by src/ui/Garage.js -->
+      <div id="garage" class="overlay" hidden></div>
+    </div>
+
+    <noscript>
+      <p style="color: #fff; font: 16px system-ui; padding: 24px">
+        This game requires JavaScript and WebGL2.
+      </p>
+    </noscript>
+
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>

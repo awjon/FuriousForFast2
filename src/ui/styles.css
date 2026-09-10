@@ -1,0 +1,118 @@
+/* =============================================================================
+   Furious For Fast 2 — UI shell
+   Only layout + chrome live here. Per-widget styles belong next to the widget
+   that owns them (HUD.js / Garage.js inject their own <style> blocks or reuse
+   the CSS custom properties declared below).
+   ============================================================================= */
+
+:root {
+  /* Canonical palette — mirrored in src/Config.js as PALETTE. Keep both in sync. */
+  --void: #05060f;
+  --asphalt: #0b0d16;
+  --cyan: #00e5ff;
+  --magenta: #ff2d95;
+  --violet: #7b2dff;
+  --amber: #ffb300;
+  --police-red: #ff1744;
+  --police-blue: #2979ff;
+  --ink: #e8ecff;
+  --ink-dim: #8590b5;
+
+  --font-display: 'Rajdhani', 'Eurostile', 'Bahnschrift', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  --hud-pad: clamp(12px, 2.5vw, 32px);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--void);
+  color: var(--ink);
+  font-family: var(--font-display);
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+}
+
+#game-canvas {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+}
+
+/* UI layer is click-through by default; interactive children opt back in. */
+#ui-root {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 10;
+}
+
+#ui-root button,
+#ui-root [role='button'],
+#ui-root input,
+#ui-root select {
+  pointer-events: auto;
+}
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  gap: 16px;
+  text-align: center;
+  background: radial-gradient(circle at 50% 55%, #0d1030 0%, var(--void) 70%);
+  pointer-events: auto;
+}
+
+.overlay[hidden] {
+  display: none;
+}
+
+.logo {
+  margin: 0;
+  font-size: clamp(32px, 8vw, 92px);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 0.95;
+  color: var(--ink);
+  text-shadow:
+    0 0 12px color-mix(in srgb, var(--cyan) 70%, transparent),
+    0 0 48px color-mix(in srgb, var(--magenta) 45%, transparent);
+}
+
+.logo span {
+  color: var(--magenta);
+}
+
+.logo em {
+  font-style: normal;
+  color: var(--cyan);
+}
+
+.hint {
+  margin: 0;
+  color: var(--ink-dim);
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  font-size: 13px;
+}
+
+/* Respect reduced-motion for UI chrome. The 3D camera shake is gated separately
+   via Config.ACCESSIBILITY.reducedMotion. */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
