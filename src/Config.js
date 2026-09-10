@@ -89,6 +89,51 @@ export const CAR_BASE = Object.freeze({
   gripSpeedGain: 0.006,
 });
 
+/**
+ * Car geometry and cosmetic body motion.
+ *
+ * Deliberately SEPARATE from CAR_BASE: these describe how a car is drawn and
+ * how it leans, and no upgrade tier may ever touch them. Keeping them out of
+ * the resolved stat block is what enforces "visual parts change appearance
+ * only" (see UpgradeSystem.js) — a body kit cannot accidentally grant grip if
+ * grip does not live in the same object.
+ */
+const WHEELBASE = 2.7;
+
+export const CAR_BODY = Object.freeze({
+  /** Distance between axles, metres. The yaw bicycle model in Physics.js uses this. */
+  wheelbase: WHEELBASE,
+  /**
+   * Longitudinal distance from the car's centre to each axle. DERIVED, not
+   * typed twice: the wheel meshes and the physics model must never be able to
+   * disagree about where the axles are.
+   */
+  axleOffset: WHEELBASE / 2,
+  /**
+   * Rolling radius, metres. Drives BOTH the wheel mesh and the spin rate in
+   * Physics.js — these were previously two separate literals in two files that
+   * a comment asked you to keep in sync by hand.
+   */
+  wheelRadius: 0.34,
+  wheelWidth: 0.25,
+  /** Lateral distance from the centreline to each wheel, metres. */
+  halfTrack: 0.95,
+
+  /** Cosmetic body lean. Purely visual — never fed back into the simulation. */
+  maxRoll: 0.1, // radians (~5.7°) at full lateral grip saturation
+  maxPitch: 0.05, // radians (~2.9°) at full braking force
+  tiltResponse: 9.0, // damp rate, per second
+});
+
+/** Scaling for the `?vectors` debug overlay. Debug-only, never gameplay. */
+export const DEBUG_DRAW = Object.freeze({
+  velocityArrowScale: 0.15, // m/s -> metres of arrow
+  forceArrowScale: 0.00025, // newtons -> metres of arrow
+  minArrowLength: 0.4,
+  arrowHeadLength: 0.35,
+  arrowHeadWidth: 0.2,
+});
+
 export const NITROUS = Object.freeze({
   capacity: 100, // "units" — the HUD shows this as a bar
   drainPerSecond: 34,

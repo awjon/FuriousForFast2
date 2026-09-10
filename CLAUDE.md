@@ -171,8 +171,8 @@ the signatures without updating this file.**
 | `systems/SaveSystem.js` | IMPLEMENTED |
 | `utils/MathUtils.js` | IMPLEMENTED |
 | `utils/Random.js` | IMPLEMENTED |
-| `physics/Physics.js` | STUB — phase 1 |
-| `entities/Car.js` | STUB — phase 1 / 3 |
+| `physics/Physics.js` | IMPLEMENTED |
+| `entities/Car.js` | IMPLEMENTED (mesh + state); `applyVisuals` phase 3 |
 | `world/Track.js` | STUB — phase 2; contract reworked for the open world |
 | `world/Environment.js` | PARTIAL — placeholder lights, phase 2 |
 | `render/CameraRig.js` | PARTIAL — minimal follow in phase 1, completed phase 3 |
@@ -576,16 +576,26 @@ Structure, `package.json`, Vite, `Config.js`, `Loop`, `Input`, `Renderer`,
 a rotating placeholder chassis at 60+ fps; `npm run build` and `npm run lint`
 both clean; `UpgradeSystem` stat resolution and save round-trip tested.
 
-### Phase 1 — The car moves
+### Phase 1 — The car moves ✅ DONE
 
-Implement `Physics.js` stages 1–7 (minus the surface query — stub `sampleAt` as
-flat ground at y = 0), and `Car.build()` / `Car.syncTransform()`.
+`Physics.js` stages 1–7, `Car.build()` / `Car.syncTransform()`, the `?vectors`
+overlay, and a minimal `CameraRig` follow camera.
 
-*Acceptance:* On flat ground you can accelerate, brake, reverse, and hold a
-sustained handbrake drift that recovers when you straighten out. Body roll reads
-under cornering. Wheels steer and spin. `?vectors` shows force vectors pointing
-where you would expect. Feel is tuned to §7.1's table — **spend real time here;
-if the car is not fun on an empty plane, no amount of track will save it.**
+*Verified* by an independent headless acceptance run (14/14) that drives the car
+with real key events rather than inspecting code: throttle 0 → 18.2 m/s in 3 s;
+brake 18.2 → 0.3 m/s in 1.5 s; reverse at −7.7 m/s steering opposite to forward;
+handbrake drift entry at 0.77 rad slip, sustaining after release, and
+**recovering to 0.000 rad slip with no residual yaw**; nitrous 16 → 31 m/s
+while draining; `step()` bit-exact deterministic across two identical 600-step
+runs; `driftScore` exactly 0 in a straight line and accumulating in a slide.
+
+**Still open — feel, not correctness.** A provoked drift reaches ~1.5 rad
+(86°) of slip: the car goes very nearly broadside before it recovers. It is
+stable and it always comes back, but that is a rally-style pendulum rather than
+the tighter 20–40° slide the NFSU2 reference holds. Nobody has judged it with
+hands on the keyboard yet, and headless assertions cannot: **§7.1's tuning table
+is the tool for this, and `driftYawAssist` ↓ / `lateralGrip` ↑ is the first
+thing to try.**
 
 ### Phase 2a — The road network
 

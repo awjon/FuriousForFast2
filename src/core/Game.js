@@ -23,7 +23,7 @@
 
 import * as THREE from 'three';
 
-import { PALETTE, RENDER, TRACK, DEBUG } from '../Config.js';
+import { RENDER, TRACK, DEBUG } from '../Config.js';
 import { Renderer } from '../render/Renderer.js';
 import { Loop } from './Loop.js';
 import { Input } from './Input.js';
@@ -69,7 +69,7 @@ export class Game {
       cash: 0, //                                                           (owner: HeatSystem)
       heat: 0, //                                                           (owner: HeatSystem)
       pursuit: null, //                                                     (owner: HeatSystem)
-      driftScore: 0, //                                                     (owner: Physics)
+      driftScore: 0, // mirror of player.state.driftScore                   (owner: Physics)
       stats: null, // resolved car stat block                               (owner: UpgradeSystem)
     };
 
@@ -97,7 +97,7 @@ export class Game {
 
     this.player = new Car({ stats: this.state.stats, isPlayer: true });
     await this.player.build(this.scene);
-    this.player.placeOnTrack(this.track, 0);
+    this.player.placeOnTrack(this.track, this.track.getSpawn());
 
     this.player.applyVisuals(this.upgrades.getVisuals());
 
@@ -144,7 +144,7 @@ export class Game {
       this.setMode(this.state.mode === 'garage' ? 'driving' : 'garage');
     }
     if (controls.pressed.reset) {
-      this.player.placeOnTrack(this.track, this.player.trackT ?? 0);
+      this.player.placeOnTrack(this.track, this.player.roadHint ?? this.track.getSpawn());
     }
 
     if (this.state.mode !== 'driving') return;
@@ -161,6 +161,10 @@ export class Game {
   render(alpha, frameDt) {
     this.player.syncTransform(alpha);
     for (const cop of this.police.units) cop.syncTransform(alpha);
+
+    // Physics accumulates drift score per car (it is never handed Game.state);
+    // Game mirrors the player's across for the HUD and the economy.
+    this.state.driftScore = this.player.state.driftScore;
 
     this.cameraRig.update(frameDt, this.state);
     this.environment.update(frameDt, this.player);
@@ -190,39 +194,20 @@ export class Game {
   // ---------------------------------------------------------------------------
 
   _buildPlaceholder() {
+    // The placeholder chassis box and orbiting preview camera are gone — the
+    // real Car mesh and CameraRig replace them from phase 1 onward. The grid
+    // stays: it is the visual ground reference that makes motion and drift
+    // legible before Track.build() exists (removed with SCAFFOLD_PREVIEW at
+    // the end of phase 2b).
     const grid = new NeonGrid({ spacing: 4, majorEvery: 8, opacity: 0.8 });
     this.scene.add(grid.mesh);
 
-    const chassis = new THREE.Mesh(
-      new THREE.BoxGeometry(2, 0.9, 4.4),
-      new THREE.MeshStandardMaterial({
-        color: PALETTE.asphalt,
-        emissive: PALETTE.cyan,
-        emissiveIntensity: 0.55,
-        metalness: 0.7,
-        roughness: 0.3,
-      })
-    );
-    chassis.position.y = 0.55;
-    this.scene.add(chassis);
-
-    const underglow = new THREE.PointLight(PALETTE.magenta, 40, 22, 2);
-    underglow.position.set(0, 0.25, 0);
-    this.scene.add(underglow);
-
-    this._placeholder = { grid, chassis, underglow };
-    this.camera.position.set(0, 4.2, 10);
-    this.camera.lookAt(0, 0.8, 0);
+    this._placeholder = { grid };
 
     if (DEBUG.enabled) console.info('[fff2] scaffold preview active — Track.build() is a stub');
   }
 
   _animatePlaceholder() {
-    const t = this.loop.elapsed;
-    const { chassis, grid } = this._placeholder;
-    chassis.rotation.y = t * 0.4;
-    this.camera.position.set(Math.sin(t * 0.15) * 11, 4.2, Math.cos(t * 0.15) * 11);
-    this.camera.lookAt(0, 0.8, 0);
-    grid.followCamera(this.camera.position);
+    this._placeholder.grid.followCamera(this.camera.position);
   }
 }
