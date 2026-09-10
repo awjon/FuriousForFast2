@@ -275,6 +275,39 @@ export const CAMERA = Object.freeze({
 });
 
 /**
+ * LIGHTING — the five-light rig (§8 of CLAUDE.md). Every number a light uses
+ * lives here, including the two ambient lights that were previously hardcoded
+ * in Environment.js's phase-1 placeholder.
+ *
+ * Slot 5 (nearest police lightbar) is intentionally absent — Police.js claims
+ * it in Phase 4. Adding a sixth light here without removing one elsewhere
+ * breaks the budget.
+ */
+export const LIGHTING = Object.freeze({
+  hemisphere: Object.freeze({ sky: 0x1a1f4a, ground: PALETTE.void, intensity: 0.35 }),
+  moon: Object.freeze({
+    color: 0xaab4ff,
+    intensity: 0.25,
+    position: Object.freeze({ x: -40, y: 80, z: 30 }),
+  }),
+  /** Slot 3 — follows the player, directly beneath the chassis. */
+  underglow: Object.freeze({
+    color: PALETTE.cyan,
+    intensity: 8,
+    distance: 6,
+    height: 0.2,
+  }),
+  /** Slot 4 — follows the player, projected onto the road ahead. */
+  headlightPool: Object.freeze({
+    color: 0xffcf99,
+    intensity: 22,
+    distance: 13,
+    height: 0.5,
+    forwardOffset: 6,
+  }),
+});
+
+/**
  * WORLD — the one permanent city. Supersedes the old closed-loop TRACK group.
  *
  * ⚠ `seed` and `generatorVersion` are FROZEN once the map ships. Changing
@@ -325,6 +358,81 @@ export const WORLD = Object.freeze({
   /** Phase 2b dressing. */
   buildingDensity: 0.65,
   streetlightSpacing: 42,
+});
+
+/**
+ * DRESSING — Phase 2b city geometry: lane markings, kerbs, guardrails,
+ * intersection fill, streetlights, buildings. `WORLD.buildingDensity` and
+ * `WORLD.streetlightSpacing` stay in WORLD (pinned ahead of this phase);
+ * everything else Phase 2b needs lives here.
+ */
+export const DRESSING = Object.freeze({
+  /** Dashed centreline, drawn in Track's road shader via the fwidth technique. */
+  laneMarking: Object.freeze({
+    halfWidth: 0.075, // metres either side of the line centre
+    dashLength: 3,
+    dashGap: 4,
+    color: PALETTE.ink,
+    emissiveIntensity: 0.6,
+  }),
+  /** Neon kerb strip just inside each road edge. MeshBasicMaterial — see §8. */
+  kerb: Object.freeze({
+    width: 0.4,
+    riseY: 0.03, // above the road surface, to win the depth test cleanly
+    color: PALETTE.cyan,
+  }),
+  /** Guardrail posts + rail beyond the kerb. Skipped near intersections and
+   * on edges too short to be worth the geometry. */
+  guardrail: Object.freeze({
+    height: 0.85,
+    offset: 0.5, // metres beyond the road edge
+    // A post is a full boxed mesh (12 tris) on BOTH sides of EVERY qualifying
+    // edge across ~65 km of road — this single number is what decides whether
+    // the city stays under the <250k triangle budget (§10). 8 m put it over.
+    postSpacing: 26,
+    postHalfWidth: 0.06,
+    railHalfHeight: 0.04,
+    endMargin: 6, // clearance kept from each node, metres
+    minEdgeLength: 22,
+    color: PALETTE.magenta,
+  }),
+  /** Filled disc at every node, painted over the ribbons that meet there so
+   * they never z-fight (§7.2, §12). */
+  intersection: Object.freeze({
+    radiusPad: 1.2, // multiplier over the widest incident edge's half-width
+    riseY: 0.05,
+    segments: 12,
+  }),
+  /** Emissive quads on a pole — never a THREE.Light (§8). One merged mesh. */
+  streetlight: Object.freeze({
+    offset: 1.1, // beyond the road edge
+    poleHeight: 6.5,
+    poleHalfWidth: 0.09,
+    lampWidth: 1.0,
+    lampHeight: 0.32,
+    color: PALETTE.amber,
+    poleColor: 0x141826,
+  }),
+  /** Scattered city mass, one InstancedMesh. Placement is rejection-sampled
+   * against RoadNetwork.sampleAt() at generation time — never on the hot path. */
+  building: Object.freeze({
+    gridSpacing: 34, // candidate placement grid, metres
+    jitter: 11,
+    margin: 6, // clearance from the road edge before a footprint may start
+    minFootprint: 12,
+    maxFootprint: 26,
+    minHeight: 12,
+    maxHeight: 70,
+    color: 0x0a0c16,
+    emissiveIntensity: 0.05, // faint self-glow so unlit faces are not pure black
+    windowColor: PALETTE.amber,
+    windowFloorHeight: 3.2,
+    /** Columns across a single face's local ±0.5 span — a count, not a density,
+     * since the shader reads pre-instance local position (see Track.js). */
+    windowColumns: 6,
+    windowLitChance: 0.4,
+    windowIntensity: 1.1,
+  }),
 });
 
 /**

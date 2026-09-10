@@ -37,16 +37,8 @@ import { HeatSystem } from '../systems/HeatSystem.js';
 import { SaveSystem } from '../systems/SaveSystem.js';
 import { CameraRig } from '../render/CameraRig.js';
 import { PostFX } from '../render/PostFX.js';
-import { NeonGrid } from '../render/NeonGrid.js';
 import { HUD } from '../ui/HUD.js';
 import { Garage } from '../ui/Garage.js';
-
-/**
- * SCAFFOLD ONLY. While Track.build() is still a stub this puts a neon grid and
- * a placeholder chassis on screen so `npm run dev` proves the render path.
- * Delete this constant and _buildPlaceholder() at the end of Phase 2.
- */
-const SCAFFOLD_PREVIEW = true;
 
 export class Game {
   /** @param {{ canvas: HTMLCanvasElement }} options */
@@ -131,8 +123,6 @@ export class Game {
       },
     });
 
-    if (SCAFFOLD_PREVIEW) this._buildPlaceholder();
-
     this.setMode('driving');
   }
 
@@ -183,8 +173,6 @@ export class Game {
     this.environment.update(frameDt, this.player);
     this.hud.update(this.player, frameDt);
 
-    if (SCAFFOLD_PREVIEW) this._animatePlaceholder();
-
     this.postFX.render(frameDt);
   }
 
@@ -207,27 +195,5 @@ export class Game {
     }
     this.renderer.dispose();
     this.scene.clear();
-  }
-
-  // ---------------------------------------------------------------------------
-  // Scaffold preview — remove with SCAFFOLD_PREVIEW in Phase 2.
-  // ---------------------------------------------------------------------------
-
-  _buildPlaceholder() {
-    // The placeholder chassis box and orbiting preview camera are gone — the
-    // real Car mesh and CameraRig replace them from phase 1 onward. The grid
-    // stays: it is the visual ground reference that makes motion and drift
-    // legible before Track.build() exists (removed with SCAFFOLD_PREVIEW at
-    // the end of phase 2b).
-    const grid = new NeonGrid({ spacing: 4, majorEvery: 8, opacity: 0.8 });
-    this.scene.add(grid.mesh);
-
-    this._placeholder = { grid };
-
-    if (DEBUG.enabled) console.info('[fff2] scaffold preview active — Track.build() is a stub');
-  }
-
-  _animatePlaceholder() {
-    this._placeholder.grid.followCamera(this.camera.position);
   }
 }

@@ -199,8 +199,8 @@ the signatures without updating this file.**
 | `utils/Random.js` | IMPLEMENTED |
 | `physics/Physics.js` | IMPLEMENTED |
 | `entities/Car.js` | IMPLEMENTED (mesh + state); `applyVisuals` phase 3 |
-| `world/Track.js` | IMPLEMENTED (crude ribbons); dressing in phase 2b |
-| `world/Environment.js` | PARTIAL — placeholder lights, phase 2 |
+| `world/Track.js` | IMPLEMENTED (phase 2b dressing: lane markings, kerbs, guardrails, intersection fill, streetlights, buildings) |
+| `world/Environment.js` | IMPLEMENTED — the five-light rig (slot 5 reserved for phase 4) |
 | `render/CameraRig.js` | PARTIAL — minimal follow in phase 1, completed phase 3 |
 | `render/PostFX.js` | STUB — phase 3 (falls through to plain render) |
 | `ui/HUD.js` | STUB — phase 3 |
@@ -739,25 +739,46 @@ than a naive all-edges scan**, ~1.1% of the fixed-step budget with 30 cars, and
 allocation-free. 300/300 random routes succeed and every one is a genuinely
 connected chain. Round-trips `getPose`→`sampleAt` to within 0.00 m.
 
-**Known simplifications, all Phase 2b's to revisit:**
+**Known simplifications:**
 - Every edge is a straight two-point curve, so streets kink at junctions rather
-  than blending through them. Explicitly allowed by "geometry can stay crude".
+  than blending through them. Explicitly allowed by "geometry can stay crude",
+  and Phase 2b deliberately left it as-is — see `RoadNetwork.js`'s header.
 - An edge straddling a chunk boundary is not split; its whole ribbon goes to
   the chunk containing its midpoint. Affects culling precision on long
-  arterials, never correctness.
-- The road is unlit black ribbon — the five-light rig and materials are 2b.
+  arterials, never correctness. Still open past Phase 2b.
+- ~~The road is unlit black ribbon~~ — resolved in Phase 2b: the five-light
+  rig, the wet-asphalt material and the dashed lane-marking shader all landed.
 
-### Phase 2b — The city looks like a city
+### Phase 2b — The city looks like a city ✅ DONE
 
 Road geometry proper (lane markings via the `fwidth` technique from
 `NeonGrid.js`), intersection polygons, kerb neon, guardrails, buildings as one
 `InstancedMesh`, streetlights as emissive quads, and the `Environment`
-five-light rig. Delete `SCAFFOLD_PREVIEW` and `_buildPlaceholder()` from
+five-light rig. Deleted `SCAFFOLD_PREVIEW` and `_buildPlaceholder()` from
 `Game.js`.
 
-*Acceptance:* The city reads as a place — you can tell one junction from another
-and navigate by landmark, which pillar 5 depends on. Going off-road is *felt*,
-not just reported. Holds the §10 draw-call budget.
+*Verified:* headless Chromium smoke run (SwiftShader) — no `pageerror`, no
+console warnings, loading overlay hidden, `RoadNetwork` unchanged at
+225 nodes / 417 edges / 65 km. From the default chase-camera position:
+**39 draw calls, 168k triangles** (§10 budget: <150 calls, <250k triangles).
+A five-way intersection screenshot shows the ribbons of all incident edges
+meeting under one raised, un-dashed disc with no visible z-fighting; a
+`readPixels()` histogram off a forced render shows 47% non-background
+pixels and a distinct dashed centreline, cyan kerbs, magenta guardrails,
+window-lit buildings and a lit streetlight pole all present in-frame.
+
+**Known simplification, Phase 3a's to revisit:** the lane-marking and window
+shaders are wired through `MeshStandardMaterial.onBeforeCompile`, which is
+the standard way to extend a built-in material but means `customProgramCacheKey`
+must stay set — if either shader grows a second material variant, that cache
+key needs to vary with it or programs will collide.
+
+**Tuning note:** the first guardrail pass put a full boxed post every 8 m on
+both sides of *every* qualifying edge — ~65 km of road — which alone pushed
+the scene to 251k triangles, just over budget. `DRESSING.guardrail.postSpacing`
+is 26 m now; if guardrails get denser again, re-check the triangle count from
+the default chase-camera position, not just a bird's-eye view (which fogs out
+before it would show the problem).
 
 ### Phase 3a — It reads like a game
 
