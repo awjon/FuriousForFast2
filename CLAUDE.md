@@ -27,12 +27,21 @@ serve one, it does not belong in this project.
    megabyte of its own code and assets.
 4. **Readable at speed.** At 200 km/h in the rain the player must still be able
    to read the road, the cops and the HUD. Legibility beats fidelity every time.
+5. **One city, learned by heart.** The map is generated once from a fixed seed
+   and is then *permanent* — every player, every session, the same streets.
+   Mastery comes from knowing which alley cuts the corner and where the cops
+   always set up. Randomising the map every run would throw that away, so
+   variety comes from seeded race *routes* across a fixed city, never from
+   regenerating the city itself.
 
 ### Explicit non-goals
 
-Simulation-grade physics. Licensed cars. Multiplayer. Open world. A gearbox with
-a clutch. Damage modelling beyond a single 0–1 scalar. Mobile-first controls
-(touch is Phase 6, and it is a courtesy, not a target).
+Simulation-grade physics. Licensed cars. Multiplayer. A gearbox with a clutch.
+Damage modelling beyond a single 0–1 scalar. Mobile-first controls (touch is
+Phase 6, and it is a courtesy, not a target).
+
+Note that **open world and civilian traffic were both moved from non-goals into
+scope** after Phase 0 — see §14 for the decisions and what they cost.
 
 ---
 
@@ -55,11 +64,11 @@ without editing source:
 | `?debug` | exposes the `Game` instance on `window.game`, logs scaffold state |
 | `?stats` | frame-time / draw-call overlay |
 | `?vectors` | draws physics force and velocity vectors on every car |
-| `?spline` | draws the track spline and its sample points |
+| `?network` | draws the road network graph: edges, intersection nodes, checkpoints |
 | `?freecam` | detaches the camera from the car |
 | `?nofx` | bypasses the post-processing chain entirely |
 
-Flags combine: `localhost:5173/?debug&spline&stats`.
+Flags combine: `localhost:5173/?debug&network&stats`.
 
 ---
 
@@ -86,6 +95,10 @@ than to respect.
 - **Addon imports use the `three/addons/…` specifier**, never
   `three/examples/jsm/…` — Vite will not pre-bundle the latter.
 - **UI is DOM.** No canvas-rendered text, no sprite fonts, no CSS3DRenderer.
+- **The city's seed is pinned and the generator is frozen.** `WORLD.seed` must
+  never be randomised at runtime, and worldgen must never call `Math.random()` —
+  take a `utils/Random.js` instance. The whole design rests on every player
+  driving the same permanent map (§7.2).
 
 ---
 
@@ -112,14 +125,17 @@ than to respect.
     ├── physics/
     │   └── Physics.js      arcade car dynamics: accel, brake, steer, drift
     ├── world/
-    │   ├── Track.js        procedural spline road + neon city dressing
+    │   ├── Track.js        owns the city: generation + road geometry
+    │   ├── RoadNetwork.js  the road GRAPH: nodes, edges, spatial index, routing
     │   └── Environment.js  lights, fog, weather
     ├── entities/
     │   ├── Car.js          one vehicle: physics state + mesh + customisation
-    │   └── Police.js       pursuit fleet and its AI state machine
+    │   ├── Police.js       pursuit fleet and its AI state machine
+    │   └── Traffic.js      civilian cars; density is a player setting
     ├── systems/
     │   ├── UpgradeSystem.js  performance + visual state → resolved stat block
     │   ├── HeatSystem.js     pursuit lifecycle, heat, cash, bust/escape
+    │   ├── RaceSystem.js     seeded checkpoint races across the fixed city
     │   └── SaveSystem.js     localStorage, defensively wrapped
     ├── render/
     │   ├── Renderer.js     owns the WebGLRenderer and camera; only resize point
@@ -157,14 +173,25 @@ the signatures without updating this file.**
 | `utils/Random.js` | IMPLEMENTED |
 | `physics/Physics.js` | STUB — phase 1 |
 | `entities/Car.js` | STUB — phase 1 / 3 |
-| `world/Track.js` | STUB — phase 2 |
+| `world/Track.js` | STUB — phase 2; contract reworked for the open world |
 | `world/Environment.js` | PARTIAL — placeholder lights, phase 2 |
-| `render/CameraRig.js` | STUB — phase 3 |
+| `render/CameraRig.js` | PARTIAL — minimal follow in phase 1, completed phase 3 |
 | `render/PostFX.js` | STUB — phase 3 (falls through to plain render) |
 | `ui/HUD.js` | STUB — phase 3 |
 | `ui/Garage.js` | STUB — phase 3 |
 | `entities/Police.js` | STUB — phase 4 |
 | `systems/HeatSystem.js` | STUB — phase 4 |
+| `world/RoadNetwork.js` | NOT YET WRITTEN — phase 2a |
+| `systems/RaceSystem.js` | NOT YET WRITTEN — phase 3b |
+| `entities/Traffic.js` | NOT YET WRITTEN — phase 5 |
+
+**Pending in `Config.js`.** This document already refers to three constant
+groups that do not exist yet: `WORLD` (seed, generator version, city extent —
+supersedes the loop-specific fields still sitting in `TRACK`), `TRAFFIC`
+(density presets) and `RACE`. They are added at the start of Phase 2a, together
+with renaming `DEBUG.showTrackSpline` to `showNetwork` behind the `?network`
+flag. Deferred rather than done now so the rename does not land mid-phase and
+break `Track.js`'s imports under someone else's feet.
 
 ---
 
@@ -175,6 +202,17 @@ everywhere internally; only `HUD.js` converts for display.
 
 **Axes.** +X right, +Y up, −Z forward. A car at rest with `heading = 0` faces
 −Z. Heading increases counter-clockwise viewed from above.
+
+**Road positions.** A place on the road is a `RoadPosition` — `{ edgeId, s }`,
+an edge of the network and metres along it. It is an **opaque handle**: pass it
+to `sampleAt`/`getPose`/`route`, store it as a car's `roadHint`, but never
+compare or subtract two of them. Distances and gaps come from `RoadNetwork`
+queries. There is no global lap parameter; see §7.2.
+
+**Reused return objects.** `Track.sampleAt()` and `Track.getPose()` return a
+single scratch object that is overwritten on the next call, because they run
+once per car per fixed step. **Copy any field you need to keep.** Holding the
+reference gives you a value that silently changes under you.
 
 **Naming.** Classes `PascalCase`, one per file, filename matches. Private
 members prefix with `_`. Scratch objects reused across frames are `_named` and
@@ -226,7 +264,7 @@ wrong way through the ±π seam — use `MathUtils.angleDelta`.
 
 ---
 
-## 7. The four core subsystems
+## 7. The core subsystems
 
 ### 7.1 `physics/Physics.js` — car dynamics
 
@@ -274,34 +312,90 @@ carries the same list with the exact formulas — treat that as the spec.
 | drift will not hold | `handbrakeGripMultiplier` ↓ | `driftYawAssist` ↑ |
 | drift will not recover | `yawDamping` ↑ | enable `ACCESSIBILITY.driftAssist` |
 
-### 7.2 `world/Track.js` — road geometry
+### 7.2 `world/Track.js` + `world/RoadNetwork.js` — the open-world city
 
-The track is **one closed `CatmullRomCurve3`**. Road mesh, kerb neon,
-guardrails, buildings, streetlights, checkpoints, cop spawn anchors and the
-off-road test are all derived from that single curve. Derive new world furniture
-from the spline rather than hand-placing it, so changing `TRACK.seed`
-regenerates a coherent city.
+**The city is one fixed, permanent map.** It is generated procedurally, but
+**once**, from a pinned seed (`WORLD.seed`), so every player in every session
+drives the same streets and can learn them. This is design pillar 5 and it is
+the reason the architecture below is a graph rather than a curve.
 
-- **Generation.** Walk `TRACK.controlPointCount` angles around a circle of
-  `TRACK.loopRadius`; jitter each radially and vertically; reject candidates
-  whose turn angle exceeds ~70°, which is what yields drivable sweepers rather
-  than hairpin spaghetti. Deterministic via `utils/Random.js`.
-- **Sampling.** Use `curve.getSpacedPoints()`, **not** `getPoints()`.
-  Arc-length-even samples are what stop the road mesh bunching in corners and
-  what make `t` usable as a race position.
-- **Mesh.** For each sample, emit two vertices at
-  `point ± side · roadWidth / 2` where `side = normalize(cross(tangent, UP))`.
-  UV `v` in metres / 8 so dashes tile at a fixed real-world scale.
-  Build **`TRACK.chunkCount` separate meshes**, not one giant geometry: a single
-  mesh can never be frustum-culled, so the GPU transforms the whole city every
-  frame.
-- **Query API.** `sampleAt()` is called for every car every fixed step, so it
-  must be O(1) and allocation-free. Precompute a ~40 m uniform spatial grid from
-  cell → candidate sample indices at build time and test only those. Accept a
-  `hintT` so a car can search a narrow window around its last known position.
-- `loopDelta(fromT, toT)` (already implemented) gives signed shortest distance
-  around the loop. The pursuit AI needs it; a naive `toT − fromT` is wrong
-  across the seam.
+> **Treat the generator as frozen once the map ships.** Changing generation code
+> silently rebuilds the city, which invalidates every player's route knowledge,
+> lap times and leaderboard. If the generator must change after launch, bump
+> `WORLD.generatorVersion` and treat it as a new map, not a patch.
+
+`RoadNetwork.js` owns the graph and all queries. `Track.js` owns generation and
+geometry and holds the network as `track.network`.
+
+#### The graph
+
+- **Nodes** are intersections: a position plus its incident edge ids.
+- **Edges** are road segments: a `CatmullRomCurve3` between two nodes, plus
+  lane count, width, and arc-length-even sample points.
+- A **`RoadPosition`** is `{ edgeId, s }` — an edge and metres along it. It is
+  the only way to name a place on the road. **It is an opaque handle: never do
+  arithmetic on it.** Distances and gaps are `RoadNetwork` queries, because
+  "0.3 along edge 7" and "0.3 along edge 40" are not comparable quantities.
+
+There is deliberately **no global lap parameter**. The old closed-loop `t` and
+its `loopDelta()` helper are gone; they do not generalise to a graph, and code
+that fakes a global position will be subtly wrong at every junction.
+
+#### Generation, in order
+
+1. **Street skeleton.** Lay out intersection nodes, then join them into a graph.
+   A perturbed grid with a few long diagonal arterials is the right starting
+   point: grids give the player legible structure to memorise, and the
+   diagonals create the shortcut decisions that make route knowledge pay off.
+   Deterministic via `utils/Random.js` seeded with `WORLD.seed` — **never
+   `Math.random()`** anywhere in worldgen.
+2. **Reject bad junctions.** Drop edges that meet at very shallow angles or that
+   are shorter than a car length; both produce undrivable geometry.
+3. **Edge splines.** One `CatmullRomCurve3` per edge, with tangents at each node
+   aligned so roads meet smoothly rather than kinking at intersections.
+4. **Sampling.** `curve.getSpacedPoints()`, **not** `getPoints()` — arc-length-even
+   samples are what stop the road mesh bunching on curves and what make `s`
+   mean actual metres.
+5. **Geometry.** Per edge, emit two vertices at
+   `point ± side · width / 2` where `side = normalize(cross(tangent, UP))`.
+   UV `v` in metres / 8 so lane dashes tile at a fixed real-world scale.
+   Intersections need their own filled polygons — do not just overlap two road
+   strips, the z-fighting is very visible at night.
+6. **Chunking.** Group geometry into spatial chunks and build one mesh per
+   chunk, **not one mesh for the city**: a single mesh can never be
+   frustum-culled, so the GPU would transform every street every frame. Chunks
+   are also the unit of loading if the map ever outgrows memory.
+
+#### Queries — the hot path
+
+`sampleAt(position, hint)` runs for **every car every fixed step** (player,
+eight cops, and traffic). It must be **O(1) and allocation-free** — mutate and
+return a scratch object, as the stub already demonstrates.
+
+- Build a **uniform spatial grid** (~40 m cells) at load time mapping cell →
+  candidate edge ids. Query only the cells overlapping the position.
+- Honour the `hint`: a car almost always remains on the edge it was on, or moves
+  to one adjacent to it. Check the hinted edge and its node's neighbours first
+  and you will hit in one or two tests, falling back to the grid only on a
+  teleport or a respawn.
+- Returns `{ road, distanceFromCentre, onRoad, surfaceY, tangent, centre }`.
+
+`getPose(road, lateralOffset)` is the inverse — position and heading at a road
+position. Used for spawning, respawning, checkpoints and roadblocks.
+
+#### Routing
+
+The pursuit AI and traffic both need paths, so `RoadNetwork` owns routing:
+
+- `route(fromRoad, toRoad)` → a list of edge ids. Dijkstra or A* over the node
+  graph with a straight-line heuristic. The graph is small and static, so
+  **precompute and cache**; do not run a fresh search every frame.
+- `gapAlongRoute(route, a, b)` → signed metres between two road positions along
+  a given route. This is what replaces `loopDelta()`, and it is what lets the
+  chase logic distinguish "the cop is 40 m behind me" from "the cop is 900 m
+  away on a parallel street".
+- `edgesAhead(road, heading, distance)` → the edges a car travelling this way
+  will plausibly reach, for spawning roadblocks and streaming.
 
 ### 7.3 `systems/UpgradeSystem.js` — customisation state
 
@@ -335,13 +429,27 @@ and when*. You can retune chase pacing without touching steering code.
 plus `DISABLED`. `SPOTTED` is a deliberate ~0.8 s reaction pause with the
 lightbar coming up: instant reaction reads as cheating.
 
-**Steering.** Pure pursuit against a **lookahead point on the spline**, not the
-player's current position — aiming at where the player is now makes cops cut
-corners into walls. Blend toward the player's actual position as the gap closes.
-Throttle drops when the heading error is large so cops brake for corners.
+**Steering — now a routing problem.** In an open world a cop cannot just follow
+one curve: at every intersection it has to *choose*. So:
+
+1. `RoadNetwork.route(cop.roadHint, player.roadHint)` gives a path of edge ids.
+   Recompute it only when the player changes edge or the cop finishes one, never
+   every frame.
+2. Take a lookahead point along that route, not the player's current position —
+   aiming at where the player is *now* makes cops cut corners into walls.
+   Lookahead grows with speed.
+3. Blend the aim point toward the player's actual position as the gap closes, so
+   the final approach is direct.
+4. `steer = clamp(headingError · 2.2, −1, 1)`; throttle drops when the error is
+   large so cops brake for corners instead of understeering into a wall.
+
+This routing also buys the chase its best moments for free: cops can take a
+*different* route and cut you off, which a single-spline chase cannot do.
 
 **Rubber-banding.** Scale a *copy* of the cop's stat block by
-`POLICE.rubberBand` from the along-track gap. Far behind → up to 1.22×. Very
+`POLICE.rubberBand`, driven by `RoadNetwork.gapAlongRoute()` — the along-route
+gap, not straight-line distance, or a cop on a parallel street reads as
+"close" and gets throttled for no reason. Far behind → up to 1.22×. Very
 close → 0.9×, which stops cops welding to the player's bumper.
 
 **Tactics** unlock by heat (`POLICE.unlock`): PIT at 2, roadblocks at 3, spike
@@ -358,10 +466,56 @@ within `bustRadius` while under `bustSpeed` for `bustSeconds`, and any of the
 three breaking resets it, so nudging free of a pin always works. A bust must
 never feel like it happened to the player without warning.
 
+The open world makes escape far more interesting than a loop did: breaking line
+of sight now means turning off the main drag into a side street, which rewards
+exactly the map knowledge pillar 5 is built around. Use **straight-line
+distance plus line of sight** for the evade test, not route distance — hiding
+one block away with a building between you should count as hidden.
+
 **Cash is only committed on escape.** Being busted forfeits the run, which is
 what makes the decision to keep pushing interesting.
 
 ---
+
+### 7.5 `systems/RaceSystem.js` — seeded races on a fixed map
+
+The variety that seeded *tracks* would have given comes from here instead: the
+city is constant, the **routes** through it are generated.
+
+- A race is a **seeded sequence of checkpoints** — `RoadPosition`s on the fixed
+  network — plus a type (sprint point-to-point, circuit, or a chase-survival
+  event) and a target time.
+- Seed the sequence from `raceId`, so a given race is always the same for
+  everyone and can be shared, compared and leaderboarded, while the *catalogue*
+  of races is cheap to expand.
+- Generate a route by picking a start node and walking the graph to checkpoints
+  a target distance apart. **Validate every generated route by routing between
+  consecutive checkpoints** and rejecting any that is unreachable or that
+  doubles back on itself — an unwinnable race is much worse than a boring one.
+- Checkpoints render as tall neon gates so they read from a distance, and the
+  HUD needs a next-checkpoint direction indicator; in an open world the player
+  genuinely does not know which way to go, and this is the difference between
+  "learning the city" and "lost".
+- Unlocks and results persist through `SaveSystem` (which is implemented and
+  tested). Progression gates new race events, **not** new maps.
+
+### 7.6 `entities/Traffic.js` — civilian cars
+
+Traffic density is a **player-facing setting** (`TRAFFIC.density`: `off`,
+`low`, `medium`, `high`), not a fixed constant — it is the main difficulty and
+performance dial the player controls.
+
+- Reuses `Car.js` with `isPlayer: false, isPolice: false`. Traffic does not need
+  the full physics step: a much cheaper "follow my edge at a target speed" mover
+  is enough, and using full `Physics.step()` for thirty cars will not fit the
+  budget. Keep them on rails, obeying lanes.
+- **Spawn and despawn by distance from the player** on edges ahead
+  (`RoadNetwork.edgesAhead`). Pool them exactly as `Police` pools cruisers —
+  never construct a `Car` while driving.
+- Traffic must be **avoidable, never unfair**: keep it out of the racing line on
+  blind corners, and never spawn one in front of the player at speed.
+- Near-misses feed `HEAT.gain.nearMissTraffic`. Ramming one costs speed and adds
+  heat.
 
 ## 8. Art direction
 
@@ -433,47 +587,75 @@ under cornering. Wheels steer and spin. `?vectors` shows force vectors pointing
 where you would expect. Feel is tuned to §7.1's table — **spend real time here;
 if the car is not fun on an empty plane, no amount of track will save it.**
 
-### Phase 2 — The city
+### Phase 2a — The road network
 
-Implement `Track.build()`, `sampleAt()`, `getPose()`, and the `Environment`
+`RoadNetwork.js` from scratch: graph generation, edge splines, the spatial
+index, `sampleAt`, `getPose`, and routing. Geometry can stay crude — untextured
+ribbons are fine. This phase is about the data structure being right.
+
+*Acceptance:* You can drive anywhere on a connected network of streets and
+`sampleAt()` always reports the correct edge, including through intersections
+and after a respawn. `?network` overlays the graph. `sampleAt()` is O(1) —
+**profile it with 30 cars before moving on**, because traffic will put it there.
+`route()` returns a sane path between any two road positions, and rejects
+nothing that is actually reachable.
+
+### Phase 2b — The city looks like a city
+
+Road geometry proper (lane markings via the `fwidth` technique from
+`NeonGrid.js`), intersection polygons, kerb neon, guardrails, buildings as one
+`InstancedMesh`, streetlights as emissive quads, and the `Environment`
 five-light rig. Delete `SCAFFOLD_PREVIEW` and `_buildPlaceholder()` from
 `Game.js`.
 
-*Acceptance:* A closed neon circuit you can drive a full lap of. Going off-road
-is felt, not just reported. `sampleAt()` costs O(1) — profile it with 8 cars
-before moving on. `?spline` overlays the curve. Changing `TRACK.seed` produces a
-different but equally drivable city.
+*Acceptance:* The city reads as a place — you can tell one junction from another
+and navigate by landmark, which pillar 5 depends on. Going off-road is *felt*,
+not just reported. Holds the §10 draw-call budget.
 
-### Phase 3 — It looks and reads like a game
+### Phase 3a — It reads like a game
 
-`CameraRig`, `PostFX` (bloom), `HUD`, `Garage`, and `Car.applyVisuals()`.
+Complete `CameraRig` (velocity-following, FOV ramp, drift offset, shake, modes),
+`PostFX` bloom, `HUD`, `Garage`, and `Car.applyVisuals()`.
 
 *Acceptance:* The chase camera follows velocity rather than heading and stays
 readable through a long drift. FOV opens with speed. Bloom makes the neon glow.
-The HUD shows speed, nitrous and drift score without measurable frame cost — put
+The HUD shows speed, nitrous and drift score with no measurable frame cost — put
 the diff-and-write rule in `HUD.js`'s header into practice. The garage lets you
 buy every performance tier and see paint, rims and underglow change **live**.
 
+### Phase 3b — Races
+
+`RaceSystem.js`: seeded checkpoint routes, neon checkpoint gates, the HUD's
+next-checkpoint direction indicator, timing, results and unlock persistence.
+
+*Acceptance:* You can start a race, follow it without getting lost, finish it,
+and see the result saved. Reloading keeps your unlocks. The same `raceId` always
+produces the same route. No generated race is unwinnable — validate a few
+hundred of them in a script, not by hand.
+
 ### Phase 4 — The chase
 
-`Police.build()` / `update()` and the full `HeatSystem` state machine, plus
-`Physics.resolveCollision()` and `applyBarrier()`.
+`Police.build()` / `update()` with graph routing, the full `HeatSystem` state
+machine, and `Physics.resolveCollision()` / `applyBarrier()`.
 
 *Acceptance:* A patrol spots you, a chase starts, heat climbs, more cruisers
-arrive, and roadblocks and spike strips appear at the right levels. You can be
+arrive, and roadblocks and spike strips appear at the right levels. Cops route
+around the block to cut you off rather than only trailing you. You can be
 busted, and you can escape — and both are legible on the HUD several seconds
 before they resolve. Cash accrues and is committed only on escape. Eight
 cruisers plus the player hold 60 fps.
 
-### Phase 5 — Sound and feel
+### Phase 5 — Traffic, sound and feel
 
-Engine loop with pitch tied to speed, tyre squeal keyed to slip angle, siren
-with distance falloff and Doppler, nitrous whoosh, collision thumps. Tyre smoke
-and nitrous particles. Skid decals on the road.
+`Traffic.js` with the `off`/`low`/`medium`/`high` density setting. Engine loop
+with pitch tied to speed, tyre squeal keyed to slip angle, siren with distance
+falloff and Doppler, nitrous whoosh, collision thumps. Tyre smoke and nitrous
+particles. Skid decals.
 
-*Acceptance:* Audio makes the same car feel faster. Nothing crackles under rapid
-throttle changes. All audio starts from a user gesture, per browser autoplay
-policy.
+*Acceptance:* Traffic at `high` still holds 60 fps alongside a full pursuit, and
+never spawns unfairly in front of the player. Audio makes the same car feel
+faster. Nothing crackles under rapid throttle changes. All audio starts from a
+user gesture, per browser autoplay policy.
 
 ### Phase 6 — Polish
 
@@ -502,6 +684,17 @@ Buildings are a single `InstancedMesh`. The road is chunked so it can be
 frustum-culled. Bloom runs at half resolution above a 1.5 pixel ratio.
 `RENDER.maxPixelRatio` is capped at 2 — above that costs a great deal and buys
 nothing at this art style.
+
+**The open world moved the bottleneck.** Two things now dominate, and both are
+per-car-per-fixed-step, so they scale with traffic density:
+
+- `RoadNetwork.sampleAt()` — must be O(1) via the spatial grid plus the edge
+  hint. Profile it with 30 cars at Phase 2a, not later.
+- Route caching — cops must not re-run a graph search per frame.
+
+Traffic cars use the cheap on-rails mover, not the full `Physics.step()`, and at
+`high` density there should be no more than ~30 of them alive at once. Everything
+beyond the player's surroundings is despawned, not simulated.
 
 ---
 
@@ -579,22 +772,58 @@ boundary.
 
 ## 13. Open questions
 
-Flagging rather than guessing. Reasonable defaults are in place; these are worth
-a decision before Phase 3 locks the feel in.
+Flagging rather than guessing. Reasonable defaults are in place.
 
-1. **Top speed.** Fully-upgraded `topSpeed` currently resolves to ~329 km/h
-   (engine ×1.18 × turbo ×1.25 × 62 m/s). That is fast even for arcade — NFSU2's
-   maxed cars sat nearer 250–280. If it feels uncontrollable at Phase 1, trim
-   the tier-3 `topSpeed` multipliers rather than adding a speed clamp; the soft
-   limiter in §7.1 exists precisely so there is one place to tune this.
-2. **Braking rating saturates** at 10/10 when fully upgraded. Either widen
+1. **Braking rating saturates** at 10/10 when fully upgraded. Either widen
    `getRatings()`'s braking range or reduce the tier-3 brake multiplier so the
-   bar remains informative.
-3. **Single circuit or several?** Everything derives from `TRACK.seed`, so
-   multiple tracks are nearly free. Not yet decided whether they are a menu
-   choice, unlocks, or one endless loop.
-4. **Traffic.** `Car.js` is already generic enough to serve civilian traffic.
-   Traffic adds a lot of chase texture and a lot of collision cases. Currently
-   out of scope; revisit after Phase 4.
-5. **Race events.** Hot Pursuit has structured races; this brief is free-roam
-   plus chases. Sprints between spline checkpoints would be cheap to add.
+   bar stays informative.
+2. **City size.** Big enough to be worth learning, small enough to memorise and
+   to generate quickly at load. Pick a real number at Phase 2a and pin it in
+   `WORLD`; a few square kilometres of dense grid is likely the right order.
+   Generation happens at load, so watch the boot time.
+3. **Navigation aid.** An open world needs *some* wayfinding beyond the
+   checkpoint indicator. A minimap is the obvious answer and the least in
+   keeping with "minimalist"; neon direction arrows painted on the road might
+   do the whole job. Decide before Phase 3b.
+4. **Do cops know the map better than the player?** They have perfect routing,
+   which risks feeling unfair. Consider deliberately degrading their routing —
+   a chance to take the second-best turn — as a difficulty dial.
+5. **Where does free roam end and a race begin?** Driving into a neon start gate
+   is the classic answer and needs no menu. Unconfirmed.
+
+---
+
+## 14. Decision log
+
+Decisions already made, with the reasoning, so they are not silently reopened.
+
+**2026-09-10 — Open world, not a set of circuits.** Superseded an earlier
+decision to ship eight seeded procedural tracks with unlocks. One fixed,
+permanent city instead, with seeded checkpoint *routes* forming races (§7.2,
+§7.5). Rationale: a map you can learn creates a real skill curve, which
+regenerated tracks cannot — knowing the shortcuts *is* the mastery. Recorded as
+design pillar 5.
+
+*What it cost:* Phase 2 roughly doubled and split into 2a/2b. `sampleAt()`
+became a nearest-point query against a graph rather than one curve; the police
+AI needs genuine route-finding; the global lap parameter `t` and `loopDelta()`
+were deleted in favour of the opaque `RoadPosition`. Accepted knowingly — it is
+the better game, and the routing also gives cops the ability to cut the player
+off, which a single-spline chase could never do.
+
+**2026-09-10 — Civilian traffic is in scope,** with density as a player setting
+(`off`/`low`/`medium`/`high`), moved out of the non-goals list (§7.6, Phase 5).
+It is also the main performance dial available to the player.
+
+**2026-09-10 — Top speed stays as-is.** ~329 km/h fully upgraded is close enough
+to the 250–280 reference. Revisit only if it is uncontrollable in play; the soft
+limiter in §7.1 is the one place to tune it.
+
+**2026-09-10 — Progression gates race events, not maps.** There is only one map.
+`SaveSystem` is implemented and tested, so unlock persistence is available.
+
+**2026-09-10 — `CameraRig` gets a minimal follow camera in Phase 1,** ahead of
+its Phase 3a slot. Phase 1's acceptance criteria are untestable without a camera
+that tracks the car, and the scaffold's orbiting preview camera fights it. The
+Phase 3a features (velocity-following, FOV ramp, shake, modes) remain
+`TODO(phase-3)`.

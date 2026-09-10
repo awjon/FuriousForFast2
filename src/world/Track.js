@@ -1,12 +1,24 @@
 /**
- * Track.js — procedural closed-loop street circuit + neon city dressing.
- * STUB: see TODO(phase-2).
+ * Track.js — the drivable city. STUB: see TODO(phase-2).
  *
- * The track is ONE closed CatmullRomCurve3. Everything else — road mesh, kerb
- * neon, guardrails, buildings, streetlights, checkpoints, cop spawn anchors,
- * the off-road test — is derived from that single curve. If you need a new
- * piece of world furniture, derive it from the spline rather than hand-placing
- * it, so a seed change regenerates a coherent city.
+ * ⚠ ARCHITECTURE CHANGE (decided after Phase 0; see CLAUDE.md §7.2)
+ * This is NO LONGER a single closed circuit. The game is an OPEN WORLD: one
+ * road NETWORK — a graph of intersections joined by spline segments —
+ * generated once from a FIXED seed so the city is identical in every session
+ * and players learn it by heart. Races are seeded CHECKPOINT SEQUENCES laid
+ * on top of that fixed city; the seed varies the route, never the map.
+ *
+ * The graph, its spatial index and its routing live in world/RoadNetwork.js.
+ * This file owns generation and geometry, and exposes the query API below.
+ *
+ * Consequences to respect:
+ *  - There is no global lap parameter `t`. A position on the road is an opaque
+ *    {@link RoadPosition} — an edge id plus metres along that edge. Treat it as
+ *    a handle: pass it back to sampleAt() as a hint, hand it to getPose(), but
+ *    never do arithmetic on it. The old `loopDelta()` does not generalise and
+ *    is gone; gap-along-route is a RoadNetwork query.
+ *  - Cops need real route-finding across the graph, not a lookahead along one
+ *    curve. See CLAUDE.md §7.4.
  *
  * ── GENERATION (deterministic, driven by utils/Random.js) ─────────────────────
  * 1. Walk `TRACK.controlPointCount` angles evenly around a circle of
@@ -55,13 +67,22 @@ import { TRACK, PALETTE } from '../Config.js';
 import { Random } from '../utils/Random.js';
 
 /**
+ * An opaque handle to a location on the road network. Do not do arithmetic on
+ * it — ask RoadNetwork for distances and routes instead.
+ *
+ * @typedef {object} RoadPosition
+ * @property {number} edgeId index of the network edge
+ * @property {number} s      metres along that edge, from its start node
+ */
+
+/**
  * @typedef {object} TrackSample
- * @property {number}  t                  normalised position along the loop, 0..1
+ * @property {RoadPosition}  road               where on the network this is
  * @property {number}  distanceFromCentre signed metres; negative = left of centre
  * @property {boolean} onRoad             |distanceFromCentre| < roadWidth / 2
  * @property {number}  surfaceY           road height at this point, metres
  * @property {THREE.Vector3} tangent      unit forward direction of the road
- * @property {THREE.Vector3} centre       closest point on the spline
+ * @property {THREE.Vector3} centre       closest point on the road centreline
  */
 
 export class Track {
@@ -74,13 +95,25 @@ export class Track {
     this.curve = null;
     /** @type {THREE.Vector3[]} arc-length-even samples along the loop */
     this.samples = [];
-    /** Total loop length in metres, for lap timing and race position. */
-    this.length = 0;
+    /** @type {import('./RoadNetwork.js').RoadNetwork | null} built in Phase 2 */
+    this.network = null;
     /** @type {THREE.Group} everything this track added to the scene */
     this.group = new THREE.Group();
     this.group.name = 'track';
-    /** @type {{ t: number, position: THREE.Vector3 }[]} */
-    this.checkpoints = [];
+    /**
+     * Scratch objects returned by sampleAt() and getPose(). Reused every call —
+     * these two run once per car per fixed step, and allocating there produces
+     * hundreds of garbage objects a second.
+     */
+    this._scratchSample = {
+      road: { edgeId: 0, s: 0 },
+      distanceFromCentre: 0,
+      onRoad: true,
+      surfaceY: 0,
+      tangent: new THREE.Vector3(0, 0, -1),
+      centre: new THREE.Vector3(),
+    };
+    this._scratchPose = { position: new THREE.Vector3(), heading: 0 };
   }
 
   /**
@@ -95,53 +128,62 @@ export class Track {
   }
 
   /**
-   * Nearest-point query against the spline. MUST be allocation-free and O(1) —
-   * see the spatial grid note above. Reuse a single scratch TrackSample.
+   * Nearest-point query against the road network. Called for every car every
+   * fixed step, so it MUST be O(1) and allocation-free: mutate and return
+   * `this._scratchSample` rather than building a new object.
+   *
+   * PHASE 1 BEHAVIOUR: reports flat ground at y = 0 and `onRoad: true`
+   * everywhere, so Physics can be built and tuned before the city exists.
+   * Callers must not depend on that — read the fields, never assume the values.
    *
    * @param {THREE.Vector3} position
-   * @param {number} [hintT] last known t for this car; lets you search a narrow
-   *                         window of samples instead of the whole grid
-   * @returns {TrackSample}
+   * @param {RoadPosition} [hint] this car's road position last step. Lets the
+   *   Phase 2 implementation search a couple of adjacent edges instead of the
+   *   whole spatial index. Safe to pass null on the first call.
+   * @returns {TrackSample} a REUSED object — copy any field you need to keep
    */
-  sampleAt(position, hintT) {
-    // TODO(phase-2)
+  sampleAt(position, hint) {
+    // TODO(phase-2): spatial-index lookup, then nearest point on candidate edges.
     void position;
-    void hintT;
-    return {
-      t: 0,
-      distanceFromCentre: 0,
-      onRoad: true,
-      surfaceY: 0,
-      tangent: new THREE.Vector3(0, 0, -1),
-      centre: new THREE.Vector3(),
-    };
+    const sample = this._scratchSample;
+    sample.road.edgeId = hint?.edgeId ?? 0;
+    sample.road.s = hint?.s ?? 0;
+    sample.distanceFromCentre = 0;
+    sample.onRoad = true;
+    sample.surfaceY = 0;
+    sample.tangent.set(0, 0, -1);
+    sample.centre.set(position.x, 0, position.z);
+    return sample;
   }
 
   /**
-   * Position and orientation at a normalised distance along the loop. Used to
-   * place the player at the start, respawn after a bust, and spawn cops and
-   * roadblocks ahead of the player.
+   * Position and orientation at a road position. Used to place the player at
+   * the start, respawn after a bust, and spawn cops and roadblocks.
    *
-   * @param {number} t normalised 0..1, wraps
+   * PHASE 1 BEHAVIOUR: returns the origin facing −Z regardless of input.
+   *
+   * @param {RoadPosition} road
    * @param {number} [lateralOffset] metres right of centre
-   * @returns {{ position: THREE.Vector3, heading: number }}
+   * @returns {{ position: THREE.Vector3, heading: number }} a REUSED object
    */
-  getPose(t, lateralOffset = 0) {
+  getPose(road, lateralOffset = 0) {
     // TODO(phase-2)
-    void t;
+    void road;
     void lateralOffset;
-    return { position: new THREE.Vector3(), heading: 0 };
+    this._scratchPose.position.set(0, 0, 0);
+    this._scratchPose.heading = 0;
+    return this._scratchPose;
   }
 
   /**
-   * Signed shortest distance from `fromT` to `toT` around the loop, in
-   * normalised units (−0.5..0.5). Positive means `toT` is ahead. The pursuit AI
-   * needs this to tell "the cop is 40 m behind me" from "the cop is 900 m
-   * behind me", which a naive `toT - fromT` gets wrong across the seam.
+   * The player's default start position — a fixed, hand-picked spot in the
+   * city, not a random one, because it doubles as the respawn point and as the
+   * place screenshots and lap times are anchored to.
+   * @returns {RoadPosition}
    */
-  loopDelta(fromT, toT) {
-    const raw = toT - fromT;
-    return raw - Math.round(raw);
+  getSpawn() {
+    // TODO(phase-2)
+    return { edgeId: 0, s: 0 };
   }
 
   dispose() {
