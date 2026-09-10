@@ -23,7 +23,7 @@
 
 import * as THREE from 'three';
 
-import { RENDER, TRACK, DEBUG } from '../Config.js';
+import { RENDER, WORLD, DEBUG } from '../Config.js';
 import { Renderer } from '../render/Renderer.js';
 import { Loop } from './Loop.js';
 import { Input } from './Input.js';
@@ -93,7 +93,7 @@ export class Game {
     this.environment = new Environment(this.scene);
     this.environment.build();
 
-    this.track = new Track({ seed: TRACK.seed });
+    this.track = new Track({ seed: WORLD.seed });
     await this.track.build(this.scene);
 
     this.player = new Car({ stats: this.state.stats, isPlayer: true });

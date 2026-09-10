@@ -274,23 +274,90 @@ export const CAMERA = Object.freeze({
   shake: Object.freeze({ collision: 0.5, nitrous: 0.12, decay: 4.0 }),
 });
 
-export const TRACK = Object.freeze({
-  roadWidth: 16, // metres, two lanes each way
-  shoulderWidth: 2.5,
-  /** Spline samples per closed loop. Higher = smoother road, more triangles. */
-  splineSamples: 900,
-  /** Segments the road mesh is chunked into, for frustum culling. */
-  chunkCount: 30,
-  /** Procedural generation seed. Change for a different city. */
+/**
+ * WORLD — the one permanent city. Supersedes the old closed-loop TRACK group.
+ *
+ * ⚠ `seed` and `generatorVersion` are FROZEN once the map ships. Changing
+ * either silently rebuilds the city and invalidates every player's route
+ * knowledge, lap times and leaderboard (§7.2, pillar 5). If generation must
+ * change after launch, bump `generatorVersion` and treat it as a NEW map, not
+ * a patch.
+ */
+export const WORLD = Object.freeze({
   seed: 20025,
-  controlPointCount: 22,
-  loopRadius: 620,
-  /** How far control points can wander from the base circle, metres. */
-  radialJitter: 210,
-  /** Vertical variation of the road, metres. Keep small — this is a street racer. */
-  elevationRange: 14,
+  generatorVersion: 1,
+
+  /**
+   * The city is `extent` × `extent` metres, centred on the origin. 2 km square
+   * = 4 km²: crossing it flat out takes ~36 s, which is long enough for a
+   * pursuit to develop and short enough to hold in your head. Bigger costs
+   * load-time generation and makes the map harder to learn, which is the whole
+   * point of pillar 5.
+   */
+  extent: 2000,
+
+  /** Nominal spacing between intersections; ~14 blocks across at 2 km. */
+  blockSize: 140,
+  /** How far each intersection may wander off the perfect grid, metres. */
+  blockJitter: 34,
+  /** Vertical variation. Keep small — this is a street racer, not a hill climb. */
+  elevationRange: 12,
+
+  /** Reject edges shorter than this; they produce undrivable stubs. */
+  minEdgeLength: 45,
+  /** Reject junctions meeting at a sharper angle than this, radians (~31°). */
+  minJunctionAngle: 0.55,
+
+  /** Ordinary street width, metres (two lanes each way). */
+  roadWidth: 13,
+  /** Arterials are wider, faster, and the spine you navigate by. */
+  arterialWidth: 18,
+  /** Long diagonal/straight arterials cut across the grid to create shortcuts. */
+  arterialCount: 4,
+
+  /** Metres between arc-length-even samples along an edge spline. */
+  sampleSpacing: 6,
+  /** Uniform spatial-index cell size for sampleAt(), metres. */
+  spatialCellSize: 40,
+  /** Metres per geometry chunk, so the road can be frustum-culled (Phase 2b). */
+  chunkSize: 250,
+
+  /** Phase 2b dressing. */
   buildingDensity: 0.65,
   streetlightSpacing: 42,
+});
+
+/**
+ * TRAFFIC — civilian cars. Density is a PLAYER SETTING, not a fixed constant:
+ * it is the main difficulty and performance dial available to them (§7.6).
+ * Implemented in Phase 5; the presets are pinned here so the settings UI and
+ * the performance budget have something concrete to target.
+ */
+export const TRAFFIC = Object.freeze({
+  density: 'medium', // 'off' | 'low' | 'medium' | 'high'
+  /** Maximum civilian cars alive at once, per density preset. */
+  maxCars: Object.freeze({ off: 0, low: 8, medium: 18, high: 30 }),
+  /** Spawn on edges this far ahead of the player, despawn beyond the second. */
+  spawnDistance: 220,
+  despawnDistance: 400,
+  /** Never spawn one closer than this in front of a moving player. */
+  minSpawnGap: 60,
+  targetSpeed: 14, // m/s, ~50 km/h
+  speedJitter: 4,
+});
+
+/**
+ * RACE — seeded checkpoint routes across the fixed city (§7.5, Phase 3b).
+ * The map never varies; these govern the routes laid over it.
+ */
+export const RACE = Object.freeze({
+  /** Target metres between consecutive checkpoints. */
+  checkpointSpacing: 400,
+  spacingJitter: 120,
+  /** Checkpoint gate trigger radius, metres. */
+  gateRadius: 14,
+  minCheckpoints: 4,
+  maxCheckpoints: 12,
 });
 
 /**
@@ -396,7 +463,7 @@ export const DEBUG = Object.freeze({
   enabled: QUERY.has('debug'),
   showStats: QUERY.has('stats'),
   showPhysicsVectors: QUERY.has('vectors'),
-  showTrackSpline: QUERY.has('spline'),
+  showNetwork: QUERY.has('network'),
   freeCamera: QUERY.has('freecam'),
 });
 

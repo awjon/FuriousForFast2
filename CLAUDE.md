@@ -207,17 +207,16 @@ the signatures without updating this file.**
 | `ui/Garage.js` | STUB — phase 3 |
 | `entities/Police.js` | STUB — phase 4 |
 | `systems/HeatSystem.js` | STUB — phase 4 |
-| `world/RoadNetwork.js` | NOT YET WRITTEN — phase 2a |
+| `world/RoadNetwork.js` | STUB — phase 2a; contract documented, Node-safe |
 | `systems/RaceSystem.js` | NOT YET WRITTEN — phase 3b |
 | `entities/Traffic.js` | NOT YET WRITTEN — phase 5 |
 
-**Pending in `Config.js`.** This document already refers to three constant
-groups that do not exist yet: `WORLD` (seed, generator version, city extent —
-supersedes the loop-specific fields still sitting in `TRACK`), `TRAFFIC`
-(density presets) and `RACE`. They are added at the start of Phase 2a, together
-with renaming `DEBUG.showTrackSpline` to `showNetwork` behind the `?network`
-flag. Deferred rather than done now so the rename does not land mid-phase and
-break `Track.js`'s imports under someone else's feet.
+**`Config.js` groups.** `WORLD` (city seed, extent, block grid, widths, spatial
+cell size) replaced the old closed-loop `TRACK` group at the start of Phase 2a.
+`TRAFFIC` (density presets) and `RACE` (checkpoint spacing) are pinned now so
+the settings UI and the performance budget have concrete numbers to target,
+even though they are consumed in Phases 5 and 3b. `DEBUG.showNetwork` sits
+behind `?network`.
 
 ---
 
@@ -417,8 +416,16 @@ the reason the architecture below is a graph rather than a curve.
 > lap times and leaderboard. If the generator must change after launch, bump
 > `WORLD.generatorVersion` and treat it as a new map, not a patch.
 
-`RoadNetwork.js` owns the graph and all queries. `Track.js` owns generation and
-geometry and holds the network as `track.network`.
+**`RoadNetwork.js` owns the graph and every query over it** — node/edge
+generation, the splines, the spatial index, `sampleAt`, `getPose` and routing.
+**`Track.js` owns geometry and the scene graph**, building meshes from the
+network it holds as `track.network` and delegating the queries straight through.
+
+That split is load-bearing: `RoadNetwork` imports no material, touches no
+scene, and is constructible under Node with no WebGL context. The graph is the
+hardest part of the open world to get right, and being able to unit-test
+generation, connectivity and routing headlessly — in milliseconds, without a
+browser — is worth more than the small awkwardness of two files.
 
 #### The graph
 
@@ -444,6 +451,11 @@ that fakes a global position will be subtly wrong at every junction.
    `Math.random()`** anywhere in worldgen.
 2. **Reject bad junctions.** Drop edges that meet at very shallow angles or that
    are shorter than a car length; both produce undrivable geometry.
+2b. **Verify the graph is fully connected** and drop any orphaned component.
+   A node the player can drive to but cops cannot route to surfaces much later
+   and much more confusingly as "the AI gave up in that corner of the map".
+   Assert connectivity in a test, not just at runtime — it is nearly free to
+   check at generation time and expensive to diagnose from gameplay.
 3. **Edge splines.** One `CatmullRomCurve3` per edge, with tangents at each node
    aligned so roads meet smoothly rather than kinking at intersections.
 4. **Sampling.** `curve.getSpacedPoints()`, **not** `getPoints()` — arc-length-even
@@ -903,18 +915,14 @@ Flagging rather than guessing. Reasonable defaults are in place.
 1. **Braking rating saturates** at 10/10 when fully upgraded. Either widen
    `getRatings()`'s braking range or reduce the tier-3 brake multiplier so the
    bar stays informative.
-2. **City size.** Big enough to be worth learning, small enough to memorise and
-   to generate quickly at load. Pick a real number at Phase 2a and pin it in
-   `WORLD`; a few square kilometres of dense grid is likely the right order.
-   Generation happens at load, so watch the boot time.
-3. **Navigation aid.** An open world needs *some* wayfinding beyond the
+2. **Navigation aid.** An open world needs *some* wayfinding beyond the
    checkpoint indicator. A minimap is the obvious answer and the least in
    keeping with "minimalist"; neon direction arrows painted on the road might
    do the whole job. Decide before Phase 3b.
-4. **Do cops know the map better than the player?** They have perfect routing,
+3. **Do cops know the map better than the player?** They have perfect routing,
    which risks feeling unfair. Consider deliberately degrading their routing —
    a chance to take the second-best turn — as a difficulty dial.
-5. **Where does free roam end and a race begin?** Driving into a neon start gate
+4. **Where does free roam end and a race begin?** Driving into a neon start gate
    is the classic answer and needs no menu. Unconfirmed.
 
 ---
@@ -986,3 +994,14 @@ newton figure.** No absolute value works across an 11000–20200 N engine range.
 **2026-09-10 — A mini-turbo survives chaining into the next drift.** The boost
 timer runs independently of `driftState`, so an S-bend rewards rather than
 punishes committing early.
+
+**2026-09-10 — City size pinned at 2 km square (4 km²).** Roughly a 14×14 block
+grid: ~225 intersections and ~420 streets before pruning. Crossing it flat out
+takes about 36 seconds — long enough for a pursuit to develop, short enough to
+hold in your head, which is what pillar 5 requires. Generation happens at load,
+so growing it costs boot time as well as memorability.
+
+**2026-09-10 — `RoadNetwork` stays free of Three.js materials and the scene.**
+It is constructible under Node with no WebGL context, so graph generation,
+connectivity and routing can be unit-tested in milliseconds instead of through
+a browser. `Track.js` owns all geometry.

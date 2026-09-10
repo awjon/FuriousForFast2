@@ -63,7 +63,7 @@
  */
 
 import * as THREE from 'three';
-import { TRACK, PALETTE } from '../Config.js';
+import { WORLD, PALETTE } from '../Config.js';
 import { Random } from '../utils/Random.js';
 
 /**
@@ -87,7 +87,7 @@ import { Random } from '../utils/Random.js';
 
 export class Track {
   /** @param {{ seed?: number }} options */
-  constructor({ seed = TRACK.seed } = {}) {
+  constructor({ seed = WORLD.seed } = {}) {
     this.random = new Random(seed);
     this.seed = seed;
 
