@@ -91,7 +91,10 @@
  * 5. YAW. Steering is kinematic, not torque-driven — far easier to tune:
  *      steerTarget = steerInput · maxSteerAngle / (1 + speed · steerSpeedFalloff)
  *      steer       = damp(steer, steerTarget, steerResponse, dt)
- *      yawTarget   = (forwardSpeed / wheelbase) · tan(steer)       // bicycle model
+ *      yawTarget   = −(forwardSpeed / wheelbase) · tan(steer)      // bicycle model
+ *                    ^ negated: the textbook model has +steer = left, but our
+ *                      input axis is +1 = RIGHT. Drop the sign and the car
+ *                      steers backwards.
  *      if isDrifting: yawTarget *= driftYawAssist
  *      yawRate     = damp(yawRate, yawTarget, yawDamping, dt)
  *      heading    += yawRate · dt
@@ -221,7 +224,12 @@ export class Physics {
       (controls.steer * stats.maxSteerAngle) / (1 + state.speed * stats.steerSpeedFalloff);
     state.steer = damp(state.steer, steerTarget, stats.steerResponse, dt);
 
-    let yawTarget = (forwardSpeed / CAR_BODY.wheelbase) * Math.tan(state.steer);
+    // NEGATED on purpose. The textbook bicycle model is written in the SAE
+    // convention where a POSITIVE steer angle turns LEFT (counter-clockwise,
+    // increasing heading). Our input convention is the opposite: Config's
+    // steer axis is -1 = full left, +1 = full right. Without this sign the
+    // car steers backwards — pressing A sends it right.
+    let yawTarget = -(forwardSpeed / CAR_BODY.wheelbase) * Math.tan(state.steer);
     if (state.isDrifting) yawTarget *= stats.driftYawAssist;
     state.yawRate = damp(state.yawRate, yawTarget, stats.yawDamping, dt);
     state.heading += state.yawRate * dt;

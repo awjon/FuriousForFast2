@@ -70,6 +70,7 @@ export class Game {
       heat: 0, //                                                           (owner: HeatSystem)
       pursuit: null, //                                                     (owner: HeatSystem)
       driftScore: 0, // mirror of player.state.driftScore                   (owner: Physics)
+      lookBack: false, // B held; read by CameraRig at render time          (owner: Input)
       stats: null, // resolved car stat block                               (owner: UpgradeSystem)
     };
 
@@ -146,6 +147,10 @@ export class Game {
     if (controls.pressed.reset) {
       this.player.placeOnTrack(this.track, this.player.roadHint ?? this.track.getSpawn());
     }
+
+    // Sampled on the fixed step but consumed at render time by CameraRig,
+    // so it has to cross over through shared state.
+    this.state.lookBack = controls.lookBack;
 
     if (this.state.mode !== 'driving') return;
 

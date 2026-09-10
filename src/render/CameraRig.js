@@ -51,6 +51,7 @@ export class CameraRig {
     this.target = target;
     /** @type {'chase'|'lookBack'|'orbit'|'free'|'busted'} */
     this.mode = 'chase';
+    this._previousMode = 'chase';
     this.shake = 0;
 
     this._desiredPosition = new THREE.Vector3();
@@ -70,11 +71,19 @@ export class CameraRig {
    * @param {object} state Game.state
    */
   update(frameDt, state) {
-    // TODO(phase-3): modes other than 'chase', shake, FOV ramp, velocity-
+    // TODO(phase-3): 'orbit'/'free'/'busted' modes, shake, FOV ramp, velocity-
     // following with the drift yaw offset, and the road-height clamp (rule 5).
-    void state;
+    this.mode = state?.lookBack ? 'lookBack' : 'chase';
 
     this._computeDesired();
+
+    // Snap rather than damp when entering or leaving look-back: the desired
+    // position jumps to the far side of the car, and damping through that
+    // sweeps the camera straight through the bodywork.
+    if (this.mode !== this._previousMode) {
+      this.camera.position.copy(this._desiredPosition);
+      this._previousMode = this.mode;
+    }
 
     const rate = CAMERA.positionLerp;
     this.camera.position.x = damp(this.camera.position.x, this._desiredPosition.x, rate, frameDt);
@@ -97,6 +106,12 @@ export class CameraRig {
     const heading = car.heading;
     this._forward.set(-Math.sin(heading), 0, -Math.cos(heading));
     this._right.set(Math.cos(heading), 0, -Math.sin(heading));
+
+    // Look-back swings the rig to the FRONT of the car and aims it rearward,
+    // so the player sees what is chasing them. Flipping the forward basis
+    // vector does both at once: the offset lands ahead of the car and the
+    // look-at target falls behind it.
+    if (this.mode === 'lookBack') this._forward.multiplyScalar(-1);
 
     this._desiredPosition
       .copy(car.position)
