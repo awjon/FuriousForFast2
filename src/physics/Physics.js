@@ -136,7 +136,7 @@ export class Physics {
    * Advance one car by exactly one fixed timestep.
    *
    * @param {import('../entities/Car.js').Car} car     mutated in place
-   * @param {object} controls  { steer, throttle, brake, handbrake, nitrous }
+   * @param {object} controls  { steer, throttle, brake, drift, nitrous }
    * @param {import('../world/Track.js').Track} track  queried for the surface
    * @param {number} dt        fixed step, seconds — never a frame delta
    */
@@ -203,7 +203,7 @@ export class Physics {
       stats.lateralGrip *
       (1 + state.speed * stats.gripSpeedGain) *
       surfaceGrip *
-      (controls.handbrake ? stats.handbrakeGripMultiplier : 1);
+      (controls.drift ? stats.handbrakeGripMultiplier : 1);
 
     const desiredLateral = (-lateralSpeed * stats.mass) / dt;
     const lateral = clamp(desiredLateral, -gripLimit, gripLimit);

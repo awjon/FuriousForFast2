@@ -93,7 +93,7 @@ export class Car {
       steer: 0,
       throttle: 0,
       brake: 0,
-      handbrake: false,
+      drift: false,
       nitrous: false,
     };
 

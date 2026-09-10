@@ -26,22 +26,27 @@ Requires Node 20.19+ (or 22.12+) and a browser with WebGL2.
 
 ## Controls
 
-| | |
-| --- | --- |
-| `W` / `S` or `↑` / `↓` | throttle / brake |
-| `A` / `D` or `←` / `→` | steer |
-| `Space` | handbrake — this is how you start a drift |
-| `Shift` | nitrous (earned by drifting) |
-| `B` | look back |
-| `G` | garage |
-| `R` | reset to the track |
-| `Esc` | pause |
+| | Player 1 | Player 2 |
+| --- | --- | --- |
+| throttle / brake | `W` / `S` | `↑` / `↓` |
+| steer | `A` / `D` | `←` / `→` |
+| drift / e-brake / burnout | `Space` | `Numpad0` |
+| nitrous | `LShift` | `RShift` |
+| look back | `B` or `Q` | `Numpad1` |
+| reset to the road | `R` | `Numpad.` |
 
-A gamepad is picked up automatically: left stick steers, triggers are throttle
-and brake, A/cross is the handbrake, B/circle is nitrous.
+`G` opens the garage, `Esc` pauses.
 
-Debug flags are URL parameters — `?debug`, `?stats`, `?vectors`, `?spline`,
-`?freecam`, `?nofx`. They combine: `localhost:5173/?debug&spline`.
+**Space is context-sensitive.** Press it while steering to commit to a drift —
+the direction locks, a charge meter builds, and releasing pays out a mini-turbo.
+Press it going straight and it is an e-brake that actually stops you. Press it
+stopped with the throttle down and you get a burnout that launches on release.
+
+Gamepads are picked up automatically, one per player: left stick steers,
+triggers are throttle and brake, A/cross drifts, B/circle is nitrous.
+
+Debug flags are URL parameters — `?debug`, `?stats`, `?vectors`, `?network`,
+`?freecam`, `?nofx`. They combine: `localhost:5173/?debug&vectors`.
 
 ## Status
 

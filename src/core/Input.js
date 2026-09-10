@@ -10,18 +10,39 @@
 
 import { INPUT } from '../Config.js';
 
-const ACTIONS = Object.keys(INPUT.bindings);
-
-/** Build a reverse map: 'KeyW' -> 'throttle'. */
-const KEY_TO_ACTION = new Map();
-for (const [action, codes] of Object.entries(INPUT.bindings)) {
-  for (const code of codes) KEY_TO_ACTION.set(code, action);
-}
-
 export class Input {
-  /** @param {HTMLElement} target element that receives focus for key events */
-  constructor(target) {
+  /**
+   * One instance per player. Split-screen constructs two; solo play
+   * constructs one and it is player 0.
+   *
+   * @param {HTMLElement} target element that receives focus for key events
+   * @param {{ playerIndex?: number, includeSystem?: boolean }} [options]
+   *   `includeSystem` folds the session-wide keys (garage, pause) into this
+   *   instance. Defaults to true for player 0 only, so a second player cannot
+   *   pause the game from their half of the keyboard by accident.
+   */
+  constructor(target, { playerIndex = 0, includeSystem = playerIndex === 0 } = {}) {
+    const player = INPUT.players[playerIndex];
+    if (!player) throw new Error(`No INPUT.players entry for index ${playerIndex}`);
+
     this.target = target;
+    this.playerIndex = playerIndex;
+    this.label = player.label;
+    this.gamepadIndex = player.gamepadIndex;
+
+    // Bindings and the reverse lookup are PER INSTANCE, not module-level:
+    // two players have different maps, and a module-level one would let
+    // player 2's keys drive player 1's car.
+    this.bindings = includeSystem
+      ? { ...player.bindings, ...INPUT.system }
+      : { ...player.bindings };
+    const ACTIONS = Object.keys(this.bindings);
+    this.actions = ACTIONS;
+
+    this.keyToAction = new Map();
+    for (const [action, codes] of Object.entries(this.bindings)) {
+      for (const code of codes) this.keyToAction.set(code, action);
+    }
 
     /** Raw digital state, keyed by action name. */
     this.held = Object.fromEntries(ACTIONS.map((a) => [a, false]));
@@ -38,14 +59,15 @@ export class Input {
       steer: 0,
       throttle: 0,
       brake: 0,
-      handbrake: false,
+      /** Context-sensitive: drift / e-brake / burnout. Physics decides which. */
+      drift: false,
       nitrous: false,
       lookBack: false,
       pressed: this.pressed,
     };
 
     this._onKeyDown = (event) => {
-      const action = KEY_TO_ACTION.get(event.code);
+      const action = this.keyToAction.get(event.code);
       if (!action) return;
       event.preventDefault();
       if (!this.held[action]) this._justPressed.add(action);
@@ -53,7 +75,7 @@ export class Input {
     };
 
     this._onKeyUp = (event) => {
-      const action = KEY_TO_ACTION.get(event.code);
+      const action = this.keyToAction.get(event.code);
       if (!action) return;
       event.preventDefault();
       this.held[action] = false;
@@ -61,7 +83,7 @@ export class Input {
 
     // Losing focus mid-corner should not leave the throttle pinned.
     this._onBlur = () => {
-      for (const action of ACTIONS) this.held[action] = false;
+      for (const action of this.actions) this.held[action] = false;
     };
 
     globalThis.addEventListener('keydown', this._onKeyDown);
@@ -74,7 +96,7 @@ export class Input {
    * @returns {typeof this.snapshot}
    */
   sample(dt) {
-    for (const action of ACTIONS) this.pressed[action] = this._justPressed.has(action);
+    for (const action of this.actions) this.pressed[action] = this._justPressed.has(action);
     this._justPressed.clear();
 
     const pad = this._readGamepad();
@@ -98,7 +120,7 @@ export class Input {
     );
     this.snapshot.brake = approach(this.snapshot.brake, brakeTarget, INPUT.throttleAttack * dt);
 
-    this.snapshot.handbrake = this.held.handbrake || Boolean(pad?.handbrake);
+    this.snapshot.drift = this.held.drift || Boolean(pad?.drift);
     this.snapshot.nitrous = this.held.nitrous || Boolean(pad?.nitrous);
     this.snapshot.lookBack = this.held.lookBack;
 
@@ -107,14 +129,15 @@ export class Input {
 
   _readGamepad() {
     const pads = navigator.getGamepads?.();
-    const pad = pads && [...pads].find((p) => p?.connected);
-    if (!pad) return null;
+    // Index by player, so player 2's stick cannot steer player 1's car.
+    const pad = pads?.[this.gamepadIndex];
+    if (!pad?.connected) return null;
 
     return {
       steer: deadzone(pad.axes[0] ?? 0),
       throttle: pad.buttons[7]?.value ?? 0, // RT
       brake: pad.buttons[6]?.value ?? 0, // LT
-      handbrake: pad.buttons[0]?.pressed ?? false, // A / cross
+      drift: pad.buttons[0]?.pressed ?? false, // A / cross
       nitrous: pad.buttons[1]?.pressed ?? false, // B / circle
     };
   }

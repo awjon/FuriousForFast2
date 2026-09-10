@@ -70,6 +70,32 @@ without editing source:
 
 Flags combine: `localhost:5173/?debug&network&stats`.
 
+### Controls
+
+Bindings live in `INPUT.players` in `Config.js`, one entry per player, so
+split-screen is a matter of constructing a second `Input` rather than a rewrite.
+
+| | Player 1 | Player 2 |
+| --- | --- | --- |
+| throttle / brake | `W` / `S` | `↑` / `↓` |
+| steer | `A` / `D` | `←` / `→` |
+| drift, e-brake, burnout | `Space` | `Numpad0` |
+| nitrous | `LShift` | `RShift` |
+| look back | `B` or `Q` | `Numpad1` |
+| reset | `R` | `Numpad.` |
+
+Session-wide, whoever presses them: `G` garage, `Esc`/`P` pause.
+
+**No Ctrl or Alt bindings, ever.** `Ctrl+W` closes the tab and cannot be
+`preventDefault()`-ed in Chrome outside true fullscreen — and player 1 holds `W`
+for throttle. `Alt` pulls focus to the browser menu bar on Windows and Linux.
+Player 2's extra actions live on the numpad for this reason.
+
+Two players on one keyboard are limited by **rollover**: membrane keyboards
+commonly drop the third to sixth simultaneous key, and two players cornering
+while boosting will exceed that. A gamepad for player 2 sidesteps it —
+`INPUT.players[n].gamepadIndex` already routes each player to their own pad.
+
 ---
 
 ## 3. Hard constraints
@@ -163,7 +189,7 @@ the signatures without updating this file.**
 | `Config.js` | IMPLEMENTED |
 | `main.js` | IMPLEMENTED |
 | `core/Loop.js` | IMPLEMENTED |
-| `core/Input.js` | IMPLEMENTED |
+| `core/Input.js` | IMPLEMENTED — per-player, split-screen ready |
 | `core/Game.js` | IMPLEMENTED (wiring); contains scaffold preview to delete |
 | `render/Renderer.js` | IMPLEMENTED |
 | `render/NeonGrid.js` | IMPLEMENTED |
@@ -311,6 +337,46 @@ carries the same list with the exact formulas — treat that as the spec.
 | spins on every corner | `lateralGrip` ↑ | `driftYawAssist` ↓ |
 | drift will not hold | `handbrakeGripMultiplier` ↓ | `driftYawAssist` ↑ |
 | drift will not recover | `yawDamping` ↑ | enable `ACCESSIBILITY.driftAssist` |
+
+#### The drift model — one context-sensitive key
+
+Space does three different things, chosen by what else you are doing at the
+moment it goes down. **There is no tap-versus-hold timer**: a timer would have
+to wait to see whether you release before deciding, and that latency is
+unacceptable on the input that defines the game. Context is free and instant.
+
+| You are | Space does |
+| --- | --- |
+| moving and steering | **DRIFT** — commit, charge, release for a mini-turbo |
+| moving, roughly straight | **E-BRAKE** — actually stops the car |
+| stopped, throttle pinned | **BURNOUT** — spin the tyres, release to launch |
+
+**The direction lock is the mechanic.** On entry the drift direction locks to
+the way you were steering, and you cannot flip it without releasing. Steering
+inside the drift only modulates the arc — into the turn tightens it
+(`DRIFT.innerSteerFactor`), away widens it (`outerSteerFactor`), and neither
+straightens the car. This is what separates a *committed drift* from "reduced
+grip while a key is held": a lock you steer within is a decision with a
+consequence, a grip multiplier is just a slider. Tune those two factors before
+anything else — they are the whole skill expression.
+
+**The mini-turbo ladder** (`DRIFT.tiers`) is Mario Kart's blue / orange /
+purple: hold the drift longer, get a bigger boost on release. Charge only
+accumulates while slip exceeds `DRIFT.chargeSlipAngle`, so a lazy slide earns
+nothing and you cannot farm a boost by tapping.
+
+**Mini-turbo and nitrous both reward drifting, on purpose, at different
+timescales.** Mini-turbo is the instant per-corner payout that teaches you to
+drift everything; nitrous is the bank you spend deliberately on a straight or
+to break a pursuit. They reinforce rather than compete — but if drifting ever
+feels like it trivialises nitrous, the mini-turbo is the one to shrink, because
+pillar 1 makes nitrous-from-drifting load-bearing.
+
+**A state machine, not a flag.** Physics owns `state.driftState`
+(`none` | `drift` | `ebrake` | `burnout` | `boost`). Entry conditions are
+evaluated only on the press edge; while held, the state does not re-evaluate.
+That is what stops a drift silently becoming an e-brake mid-corner when you
+happen to straighten the wheel.
 
 ### 7.2 `world/Track.js` + `world/RoadNetwork.js` — the open-world city
 
@@ -597,6 +663,22 @@ hands on the keyboard yet, and headless assertions cannot: **§7.1's tuning tabl
 is the tool for this, and `driftYawAssist` ↓ / `lateralGrip` ↑ is the first
 thing to try.**
 
+### Phase 1b — Drift feel and two-player input
+
+The drift model above, replacing the grip-only handbrake. Config (`DRIFT`,
+`INPUT.players`) and the `Input` per-player migration are done; the physics
+state machine is not.
+
+*Acceptance:* Entering a drift feels like a commitment you steer through, not a
+slider you hold. The charge meter reaches all three tiers and each pays out a
+visibly bigger boost. Space with no steering brings the car to a genuine stop.
+Space stopped with throttle spins the wheels and launches on release. Two
+`Input` instances can be constructed and driven independently without either
+player's keys touching the other's car.
+
+*Not in scope here:* split-screen rendering — two viewports, two cameras, a
+split render target. This phase only makes the input layer ready for it.
+
 ### Phase 2a — The road network
 
 `RoadNetwork.js` from scratch: graph generation, edge splines, the spatial
@@ -837,3 +919,24 @@ its Phase 3a slot. Phase 1's acceptance criteria are untestable without a camera
 that tracks the car, and the scaffold's orbiting preview camera fights it. The
 Phase 3a features (velocity-following, FOV ramp, shake, modes) remain
 `TODO(phase-3)`.
+
+**2026-09-10 — Space is context-sensitive, not tap-versus-hold.** Steering →
+drift, straight → e-brake, stopped with throttle → burnout (§7.1). Chosen over
+a tap/hold timer specifically to avoid input latency on the game's defining
+key, and over a second key to keep both players' hands small enough to share a
+keyboard.
+
+**2026-09-10 — Mario Kart's committed drift, adopted deliberately.** Direction
+locks on entry, steering only modulates the arc, and a charge ladder pays out
+a mini-turbo on release. The old model — hold a key, get less grip, slide
+indefinitely — had no commitment and therefore no skill expression.
+
+**2026-09-10 — Mini-turbo and nitrous both reward drifting.** Different
+timescales: instant per-corner versus banked and spent. If they ever feel
+redundant, shrink the mini-turbo, because pillar 1 makes nitrous-from-drifting
+load-bearing.
+
+**2026-09-10 — No Ctrl or Alt key bindings, ever.** `Ctrl+W` closes the tab and
+cannot be blocked in Chrome outside fullscreen, and player 1 holds `W`. Player
+2's extra actions are on the numpad. Superseded the original proposal of
+`LCtrl`/`LAlt` and `RCtrl`/`RAlt`.

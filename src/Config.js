@@ -147,6 +147,70 @@ export const NITROUS = Object.freeze({
   minimumToEngage: 15,
 });
 
+/**
+ * DRIFT — the context-sensitive Space key, Mario Kart style.
+ *
+ * Space does three different things depending on what else you are doing, so
+ * there is never a tap-versus-hold timer and therefore never any input lag:
+ *
+ *   moving + steering  → COMMIT to a drift. Direction locks to the way you
+ *                        were steering; you cannot flip it without releasing.
+ *                        A charge meter builds, and releasing pays out a
+ *                        mini-turbo sized by how long you held it.
+ *   moving + straight  → E-BRAKE. Actually stops the car, which the old
+ *                        grip-only handbrake never did.
+ *   stopped + throttle → BURNOUT. Wheels spin, car barely moves, and letting
+ *                        go launches you.
+ *
+ * The direction LOCK is what separates this from "reduced grip while held".
+ * A lock you commit to and steer within is a decision; a grip multiplier is
+ * just a slider. That commitment is what the charge meter rewards.
+ */
+export const DRIFT = Object.freeze({
+  /** Minimum |steer| at the moment Space goes down to read it as a drift. */
+  steerToEngage: 0.25,
+  /** Below this speed Space is an e-brake or a burnout, never a drift. */
+  minSpeed: 6, // m/s
+  /** Grip multiplier while a drift is locked in — replaces handbrakeGripMultiplier. */
+  gripMultiplier: 0.32,
+
+  /**
+   * Steering authority INSIDE a locked drift. Steering into the turn tightens
+   * the arc, steering away widens it, but neither can straighten the car or
+   * flip the drift. This band is the whole skill expression of the mechanic,
+   * so tune these two before anything else.
+   */
+  innerSteerFactor: 1.0, // holding into the drift
+  outerSteerFactor: 0.35, // holding against it
+
+  /** Slip angle the car must exceed before the charge meter will build. */
+  chargeSlipAngle: 0.25, // radians
+
+  /**
+   * Mini-turbo ladder — seconds of sustained drift to reach each tier, and
+   * what it pays out. Mirrors Mario Kart's blue / orange / purple.
+   * `color` drives the HUD meter and the exhaust flash in Phase 3a.
+   */
+  tiers: Object.freeze([
+    Object.freeze({ name: 'blue', seconds: 0.6, force: 5200, duration: 0.55, color: 0x00e5ff }),
+    Object.freeze({ name: 'orange', seconds: 1.5, force: 8600, duration: 0.9, color: 0xffb300 }),
+    Object.freeze({ name: 'purple', seconds: 2.6, force: 13000, duration: 1.35, color: 0x7b2dff }),
+  ]),
+
+  /** E-BRAKE — Space with little or no steering. This one must actually stop you. */
+  ebrakeForce: 22000, // newtons, stronger than CAR_BASE.brakeForce on purpose
+  ebrakeGripMultiplier: 0.55, // slides a little, so it still reads as an e-brake
+
+  /** BURNOUT — stopped, throttle pinned, Space held. */
+  burnoutMaxSpeed: 3, // m/s; above this Space e-brakes instead
+  burnoutHoldForce: 16000, // opposes the engine so the car barely creeps
+  burnoutWheelSpinRate: 45, // rad/s of visual wheel spin while roasting them
+  burnoutChargePerSecond: 1.0,
+  burnoutMaxCharge: 1.6, // seconds of charge worth banking
+  burnoutLaunchForce: 7000, // newtons, scaled by charge, on release
+  burnoutLaunchDuration: 0.7, // seconds
+});
+
 export const HEAT = Object.freeze({
   maxLevel: 5,
   /** Seconds of active pursuit needed to climb one heat level. */
@@ -222,6 +286,25 @@ export const TRACK = Object.freeze({
   streetlightSpacing: 42,
 });
 
+/**
+ * INPUT — per-player bindings, built for split-screen from the start.
+ *
+ * ── Why no Ctrl or Alt ────────────────────────────────────────────────────────
+ * Ctrl+W closes the tab and CANNOT be preventDefault()-ed in Chrome outside
+ * true fullscreen. Player 1 holds W for throttle, so a Ctrl binding would end
+ * the session mid-race. Alt is nearly as bad: on Windows and Linux it pulls
+ * focus to the browser menu bar. Neither is worth the risk, so player 2's
+ * extra actions live on the numpad instead.
+ *
+ * ── Known limits ──────────────────────────────────────────────────────────────
+ *  - Laptops without a numpad cannot play player 2 as bound. Rebinding or a
+ *    gamepad is the answer; the game should say so rather than silently
+ *    ignoring the keys.
+ *  - Keyboard ROLLOVER is the real ceiling on two players sharing one board.
+ *    Membrane keyboards commonly drop the 3rd–6th simultaneous key, and two
+ *    players cornering while boosting will exceed that. A gamepad for player 2
+ *    sidesteps it entirely, which is what console split-screen actually does.
+ */
 export const INPUT = Object.freeze({
   /** Keyboard maps to analogue axes with these ramp rates, per second. */
   steerAttack: 4.2,
@@ -229,15 +312,46 @@ export const INPUT = Object.freeze({
   throttleAttack: 5.0,
   throttleRelease: 6.5,
   gamepadDeadzone: 0.12,
-  bindings: Object.freeze({
-    throttle: ['KeyW', 'ArrowUp'],
-    brake: ['KeyS', 'ArrowDown'],
-    steerLeft: ['KeyA', 'ArrowLeft'],
-    steerRight: ['KeyD', 'ArrowRight'],
-    handbrake: ['Space'],
-    nitrous: ['ShiftLeft', 'ShiftRight'],
-    lookBack: ['KeyB'],
-    reset: ['KeyR'],
+
+  /**
+   * One entry per player. Index 0 is always the solo player. Split-screen adds
+   * index 1; nothing above 2 is planned. `gamepadIndex` lets a player take a
+   * pad instead of the keyboard — the pad wins whenever one is connected.
+   */
+  players: Object.freeze([
+    Object.freeze({
+      label: 'Player 1',
+      gamepadIndex: 0,
+      bindings: Object.freeze({
+        throttle: ['KeyW'],
+        brake: ['KeyS'],
+        steerLeft: ['KeyA'],
+        steerRight: ['KeyD'],
+        /** Context-sensitive: drift / e-brake / burnout. See DRIFT. */
+        drift: ['Space'],
+        nitrous: ['ShiftLeft'],
+        lookBack: ['KeyB', 'KeyQ'],
+        reset: ['KeyR'],
+      }),
+    }),
+    Object.freeze({
+      label: 'Player 2',
+      gamepadIndex: 1,
+      bindings: Object.freeze({
+        throttle: ['ArrowUp'],
+        brake: ['ArrowDown'],
+        steerLeft: ['ArrowLeft'],
+        steerRight: ['ArrowRight'],
+        drift: ['Numpad0'],
+        nitrous: ['ShiftRight'],
+        lookBack: ['Numpad1'],
+        reset: ['NumpadDecimal'],
+      }),
+    }),
+  ]),
+
+  /** Not per-player: these act on the session, whoever presses them. */
+  system: Object.freeze({
     garage: ['KeyG'],
     pause: ['Escape', 'KeyP'],
   }),
